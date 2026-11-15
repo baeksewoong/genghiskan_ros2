@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { DashboardTemplate } from "../components/templates/DashboardTemplate";
 import { TopBar } from "../components/organisms/TopBar";
-import { WorkshopStage } from "../components/organisms/WorkshopStage";
 import { OrderQueuePanel } from "../components/organisms/OrderQueuePanel";
 import { OrderForm } from "../components/organisms/OrderForm";
 import { DebugPanel } from "../components/organisms/DebugPanel";
@@ -12,7 +11,7 @@ import { api, WorkRequestError } from "../lib/api";
 import type { Shape } from "../types";
 
 export function DashboardPage() {
-  const { snapshot, connected, alert, log, setAlert, feedback, updateSimulator } = useLiveState();
+  const { snapshot, connected, alert, log, setAlert, updateSimulator } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
 
   const handleOrder = async (customerName: string, shape: Shape) => {
@@ -37,7 +36,7 @@ export function DashboardPage() {
     return <div className="app-loading">서버에 연결하는 중...</div>;
   }
 
-  const { printers, robot, waiting_orders, active_orders, pickup_orders, simulator } = snapshot;
+  const { robot, waiting_orders, active_orders, pickup_orders, simulator } = snapshot;
 
   return (
     <DashboardTemplate
@@ -47,16 +46,6 @@ export function DashboardPage() {
           robot={robot}
           simulator={simulator}
           onPatchSimulator={(patch) => api.patchSimulator(patch).then(updateSimulator)}
-        />
-      }
-      workshopStage={
-        <WorkshopStage
-          printers={printers}
-          waitingOrders={waiting_orders}
-          activeOrders={active_orders}
-          pickupOrders={pickup_orders}
-          feedback={feedback}
-          timeScale={simulator.time_scale}
         />
       }
       waitingQueue={<OrderQueuePanel title="대기 큐" orders={waiting_orders} />}

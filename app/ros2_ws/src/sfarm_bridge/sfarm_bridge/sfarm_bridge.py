@@ -1,7 +1,7 @@
 """
 Web(AWS SQS) <-> ROS 2 브릿지 노드 (sfarm_bridge).
 
-robot-commands.fifo 큐에서 작업 명령을 수신해 ROS 2 액션(/sfarm/insert, /sfarm/eject)으로
+robot-commands.fifo 큐에서 작업 명령을 수신해 ROS 2 액션(/sfarm/load, /sfarm/unload)으로
 전달하고, 실행 결과 및 /sfarm/error 서비스 호출을 robot-events 큐로 발행한다.
 
 ros2 run sfarm_bridge sfarm_bridge --ros-args \
@@ -25,11 +25,11 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
-from sfarm_interfaces.action import Eject, Insert
+from sfarm_interfaces.action import Load, Unload
 from sfarm_interfaces.srv import Error
 
 COMPLETED_EVENT = {'LOAD': 'LOAD_COMPLETED', 'UNLOAD': 'UNLOAD_COMPLETED'}
-ACTION_COMPLETED_EVENT = {'INSERT': 'INSERT_COMPLETED', 'EJECT': 'EJECT_COMPLETED'}
+ACTION_COMPLETED_EVENT = {'LOAD': 'LOAD_COMPLETED', 'UNLOAD': 'UNLOAD_COMPLETED'}
 DEFAULT_COMMAND_QUEUE_URL = (
     'https://sqs.ap-northeast-2.amazonaws.com/135135392043/robot-commands.fifo'
 )
@@ -62,7 +62,7 @@ def _to_int(value) -> int | None:
 
 
 def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
-    """Parse an SQS command payload into ('INSERT' | 'EJECT', goal_fields)."""
+    """Parse an SQS command payload into ('LOAD' | 'UNLOAD', goal_fields)."""
     if not isinstance(command, dict):
         return None, None
 
@@ -83,21 +83,21 @@ def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
         command.get('type') or command.get('command_type') or ''
     ).strip().upper()
 
-    is_insert = raw_type in {'INSERT', 'LOAD'} or (
+    is_load = raw_type == 'LOAD' or (
         start_pos_id is not None and receive_pos_id is None
     )
-    if is_insert and work_id is not None and start_pos_id is not None and pos_3d_id is not None:
-        return 'INSERT', {
+    if is_load and work_id is not None and start_pos_id is not None and pos_3d_id is not None:
+        return 'LOAD', {
             'work_id': work_id,
             'start_pos_id': start_pos_id,
             'pos_3d_id': pos_3d_id,
         }
 
-    is_eject = raw_type in {'EJECT', 'UNLOAD'} or (
+    is_unload = raw_type == 'UNLOAD' or (
         receive_pos_id is not None and start_pos_id is None
     )
-    if is_eject and work_id is not None and pos_3d_id is not None and receive_pos_id is not None:
-        return 'EJECT', {
+    if is_unload and work_id is not None and pos_3d_id is not None and receive_pos_id is not None:
+        return 'UNLOAD', {
             'work_id': work_id,
             'pos_3d_id': pos_3d_id,
             'receive_pos_id': receive_pos_id,
@@ -137,7 +137,7 @@ def build_action_result_event(
         if success
         else f'{action_kind}_FAILED'
     )
-    work_type_str = 'insert' if work_type == Insert.Result.WORK_TYPE_INSERT else 'eject'
+    work_type_str = 'load' if work_type == Load.Result.WORK_TYPE_LOAD else 'unload'
     return {
         'event_id': f'evt-{uuid.uuid4()}',
         'event_type': event_type,
@@ -208,11 +208,11 @@ class SqsEchoNode(Node):
             raise ValueError('command_queue_url and event_queue_url are required')
 
         self.cb_group = ReentrantCallbackGroup()
-        self.insert_client = ActionClient(
-            self, Insert, '/sfarm/insert', callback_group=self.cb_group
+        self.load_client = ActionClient(
+            self, Load, '/sfarm/load', callback_group=self.cb_group
         )
-        self.eject_client = ActionClient(
-            self, Eject, '/sfarm/eject', callback_group=self.cb_group
+        self.unload_client = ActionClient(
+            self, Unload, '/sfarm/unload', callback_group=self.cb_group
         )
         self.error_srv = self.create_service(
             Error, '/sfarm/error', self.handle_error_service, callback_group=self.cb_group
@@ -303,18 +303,18 @@ class SqsEchoNode(Node):
 
     # ---------------------------------------------------------------- ros2 action
     def execute_ros_action(self, action_kind: str, goal_fields: dict):
-        """Send an Insert or Eject goal to ROS 2 and wait for the result."""
-        if action_kind == 'INSERT':
-            client = self.insert_client
-            action_name = '/sfarm/insert'
-            goal_msg = Insert.Goal()
+        """Send a Load or Unload goal to ROS 2 and wait for the result."""
+        if action_kind == 'LOAD':
+            client = self.load_client
+            action_name = '/sfarm/load'
+            goal_msg = Load.Goal()
             goal_msg.work_id = goal_fields['work_id']
             goal_msg.start_pos_id = goal_fields['start_pos_id']
             goal_msg.pos_3d_id = goal_fields['pos_3d_id']
         else:
-            client = self.eject_client
-            action_name = '/sfarm/eject'
-            goal_msg = Eject.Goal()
+            client = self.unload_client
+            action_name = '/sfarm/unload'
+            goal_msg = Unload.Goal()
             goal_msg.work_id = goal_fields['work_id']
             goal_msg.pos_3d_id = goal_fields['pos_3d_id']
             goal_msg.receive_pos_id = goal_fields['receive_pos_id']

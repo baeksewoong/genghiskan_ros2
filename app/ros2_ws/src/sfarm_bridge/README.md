@@ -59,22 +59,22 @@ ros2 run sfarm_bridge sfarm_bridge --ros-args \
 
 | 종류 | 채널 주소 | 인터페이스 타입 | 방향 |
 | :--- | :--- | :--- | :--- |
-| Action | `/sfarm/insert` | `sfarm_interfaces/action/Insert` | `sfarm_bridge`(Client) → 로봇 팔 노드(Server) |
-| Action | `/sfarm/eject` | `sfarm_interfaces/action/Eject` | `sfarm_bridge`(Client) → 로봇 팔 노드(Server) |
+| Action | `/sfarm/load` | `sfarm_interfaces/action/Load` | `sfarm_bridge`(Client) → 로봇 팔 노드(Server) |
+| Action | `/sfarm/unload` | `sfarm_interfaces/action/Unload` | `sfarm_bridge`(Client) → 로봇 팔 노드(Server) |
 | Service | `/sfarm/error` | `sfarm_interfaces/srv/Error` | 로봇 팔 노드(Client) → `sfarm_bridge`(Server) |
 
 ### 4.2 웹(SQS `robot-commands.fifo`) 수신 메시지 예시
 
-- **Insert (적재대 → 3D 프린터)**:
+- **Load (적재대 → 3D 프린터)**:
   ```json
   {"work_id": 16, "start_pos_id": 3, "sd_pos_id": 2}
   ```
-- **Eject (3D 프린터 → 수령대)**:
+- **Unload (3D 프린터 → 수령대)**:
   ```json
   {"work_id": 17, "sd_pos_id": 2, "receive_pos_id": 1}
   ```
 
-> **참고**: `/sfarm/insert` 또는 `/sfarm/eject` Action Server 노드가 실행 중이 아니면 `action server is not available` 로그가 출력되며, SQS 메시지는 유실 방지를 위해 삭제되지 않고 큐에 유지됩니다.
+> **참고**: `/sfarm/load` 또는 `/sfarm/unload` Action Server 노드가 실행 중이 아니면 `action server is not available` 로그가 출력되며, SQS 메시지는 유실 방지를 위해 삭제되지 않고 큐에 유지됩니다.
 
 ### 4.3 CLI 단독 테스트
 
@@ -92,8 +92,8 @@ ros2 service list | grep sfarm
 ros2 service call /sfarm/error sfarm_interfaces/srv/Error "{message: 'test error from cli'}"
 
 # 3. 인터페이스 정의 확인
-ros2 interface show sfarm_interfaces/action/Insert
-ros2 interface show sfarm_interfaces/action/Eject
+ros2 interface show sfarm_interfaces/action/Load
+ros2 interface show sfarm_interfaces/action/Unload
 ```
 
 ---

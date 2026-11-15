@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 
 interface DashboardTemplateProps {
   topBar: ReactNode;
-  workshopStage: ReactNode;
   waitingQueue: ReactNode;
   activeQueue: ReactNode;
   pickupQueue: ReactNode;
@@ -14,7 +13,6 @@ interface DashboardTemplateProps {
 
 export function DashboardTemplate({
   topBar,
-  workshopStage,
   waitingQueue,
   activeQueue,
   pickupQueue,
@@ -26,7 +24,6 @@ export function DashboardTemplate({
   return (
     <div className="app">
       {topBar}
-      {workshopStage}
       <main className="layout">
         {waitingQueue}
         {activeQueue}
