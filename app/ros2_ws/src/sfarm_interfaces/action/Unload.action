@@ -1,11 +1,11 @@
 # Goal (input)
 int8 work_id
-int8 start_pos_id
 int8 pos_3d_id
+int8 receive_pos_id
 ---
 # Result (output)
-uint8 WORK_TYPE_INSERT=0
-uint8 WORK_TYPE_EJECT=1
+uint8 WORK_TYPE_LOAD=0
+uint8 WORK_TYPE_UNLOAD=1
 
 bool success
 string message

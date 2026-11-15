@@ -22,7 +22,7 @@ from sfarm_bridge.sfarm_bridge import (
     DEFAULT_EVENT_QUEUE_URL,
     parse_task_command,
 )
-from sfarm_interfaces.action import Insert
+from sfarm_interfaces.action import Load
 
 
 def test_default_event_queue_url():
@@ -86,31 +86,31 @@ def test_build_robot_event_variants():
     assert bad_evt['reason'] == 'unknown type'
 
 
-def test_parse_task_command_insert_and_eject():
-    """Verify SQS insert/eject payloads parse into ROS 2 action goals."""
-    insert_cmd = {'work_id': 16, 'start_pos_id': 3, 'sd_pos_id': 2}
-    kind, fields = parse_task_command(insert_cmd)
-    assert kind == 'INSERT'
+def test_parse_task_command_load_and_unload():
+    """Verify SQS load/unload payloads parse into ROS 2 action goals."""
+    load_cmd = {'work_id': 16, 'start_pos_id': 3, 'sd_pos_id': 2}
+    kind, fields = parse_task_command(load_cmd)
+    assert kind == 'LOAD'
     assert fields == {'work_id': 16, 'start_pos_id': 3, 'pos_3d_id': 2}
 
-    eject_cmd = {'work_id': 17, 'sd_pos_id': 2, 'receive_pos_id': 1}
-    kind2, fields2 = parse_task_command(eject_cmd)
-    assert kind2 == 'EJECT'
+    unload_cmd = {'work_id': 17, 'sd_pos_id': 2, 'receive_pos_id': 1}
+    kind2, fields2 = parse_task_command(unload_cmd)
+    assert kind2 == 'UNLOAD'
     assert fields2 == {'work_id': 17, 'pos_3d_id': 2, 'receive_pos_id': 1}
 
 
 def test_build_action_result_event():
     """Verify ROS 2 action result converts to robot-events SQS payload."""
     evt = build_action_result_event(
-        action_kind='INSERT',
+        action_kind='LOAD',
         work_id=16,
         success=True,
         message='done',
-        work_type=Insert.Result.WORK_TYPE_INSERT,
+        work_type=Load.Result.WORK_TYPE_LOAD,
         robot_id='robot-arm-1',
     )
-    assert evt['event_type'] == 'INSERT_COMPLETED'
+    assert evt['event_type'] == 'LOAD_COMPLETED'
     assert evt['work_id'] == 16
-    assert evt['work_type'] == 'insert'
+    assert evt['work_type'] == 'load'
     assert evt['success'] is True
     assert evt['message'] == 'done'
