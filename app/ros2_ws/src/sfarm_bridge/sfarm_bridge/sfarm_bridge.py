@@ -25,7 +25,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
-from sfarm_interfaces.action import Load, Unload
+from sfarm_interfaces.action import Load, Load1, Unload
 from sfarm_interfaces.srv import Error
 
 COMPLETED_EVENT = {'LOAD': 'LOAD_COMPLETED', 'UNLOAD': 'UNLOAD_COMPLETED'}
@@ -150,6 +150,43 @@ def build_action_result_event(
     }
 
 
+def build_pick_complete_event(work_id: int, robot_id: str) -> dict:
+    """Build a pick_complete SQS payload matching backend SqsConsumerService."""
+    return {
+        'event_id': f'evt-{uuid.uuid4()}',
+        'event_type': 'PICK_COMPLETE',
+        'work_id': work_id,
+        'status': 'pick_complete',
+        'robot_id': robot_id,
+        'occurred_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+    }
+
+
+def build_load_fail_event(
+    stage: str,
+    work_id: int,
+    robot_id: str,
+    message: str = '',
+) -> dict:
+    """Build a robot-events SQS failure payload for load1 or load2."""
+    fail_type = (
+        Error.Request.TYPE_FAIL_LOAD1
+        if stage == Error.Request.STAGE_LOAD1
+        else Error.Request.TYPE_FAIL_LOAD2
+    )
+    return {
+        'event_id': f'evt-{uuid.uuid4()}',
+        'event_type': fail_type,
+        'type': fail_type,
+        'work_id': work_id,
+        'stage': stage,
+        'success': False,
+        'message': message,
+        'robot_id': robot_id,
+        'occurred_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+    }
+
+
 def load_dotenv() -> None:
     """Load key=value pairs from the first available .env file into os.environ."""
     candidates = [Path.cwd() / '.env']
@@ -203,6 +240,12 @@ class SqsEchoNode(Node):
         self.action_timeout_sec = float(
             self.declare_parameter('action_timeout_sec', 120.0).value
         )
+        self.use_split_load = bool(
+            self.declare_parameter('use_split_load', False).value
+        )
+        self.load_stop_service = str(
+            self.declare_parameter('load_stop_service', '/sfarm/load/stop').value
+        )
 
         if not self.command_queue_url or not self.event_queue_url:
             raise ValueError('command_queue_url and event_queue_url are required')
@@ -211,8 +254,14 @@ class SqsEchoNode(Node):
         self.load_client = ActionClient(
             self, Load, '/sfarm/load', callback_group=self.cb_group
         )
+        self.load1_client = ActionClient(
+            self, Load1, '/sfarm/load1', callback_group=self.cb_group
+        )
         self.unload_client = ActionClient(
             self, Unload, '/sfarm/unload', callback_group=self.cb_group
+        )
+        self.load_stop_client = self.create_client(
+            Error, self.load_stop_service, callback_group=self.cb_group
         )
         self.error_srv = self.create_service(
             Error, '/sfarm/error', self.handle_error_service, callback_group=self.cb_group
@@ -228,15 +277,23 @@ class SqsEchoNode(Node):
     # ---------------------------------------------------------------- service
     def handle_error_service(self, request: Error.Request, response: Error.Response):
         """Forward robot error service calls to the robot-events SQS queue."""
-        self.get_logger().error(f'[/sfarm/error] {request.message}')
+        self.get_logger().error(
+            f'[/sfarm/error] type={request.type} work_id={request.work_id} '
+            f'stage={request.stage} message={request.message}'
+        )
         event = {
             'event_id': f'evt-{uuid.uuid4()}',
-            'event_type': 'ERROR',
+            'event_type': request.type or 'ERROR',
+            'type': request.type or 'ERROR',
+            'work_id': request.work_id,
+            'stage': request.stage,
             'message': request.message,
             'robot_id': self.robot_id,
             'occurred_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         }
-        self.produce(event)
+        sent = self.produce(event)
+        response.success = sent
+        response.message = 'sent' if sent else 'produce failed'
         return response
 
     # ---------------------------------------------------------------- consume
@@ -280,6 +337,21 @@ class SqsEchoNode(Node):
         if action_kind is None or goal_fields is None:
             event = self.build_event(command)
             if self.produce(event):
+                self.delete(message)
+            return
+
+        if action_kind == 'LOAD' and self.use_split_load:
+            result, event_sent = self.execute_load1(
+                work_id=goal_fields['work_id'],
+                start_pos_id=goal_fields['start_pos_id'],
+                sd_pos_id=goal_fields['pos_3d_id'],
+            )
+            if result is None:
+                self.get_logger().warning(
+                    'LOAD1 action did not complete; keeping SQS message for retry'
+                )
+                return
+            if event_sent:
                 self.delete(message)
             return
 
@@ -376,6 +448,184 @@ class SqsEchoNode(Node):
 
         return holder['result']
 
+    # ---------------------------------------------------------------- load1 callbacks
+    def execute_load1(
+        self,
+        work_id: int,
+        start_pos_id: int,
+        sd_pos_id: int | None = None,
+    ) -> tuple[Load1.Result | None, bool]:
+        """Send a Load1 goal to /sfarm/load1 and handle success/failure callbacks."""
+        if not self.load1_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('/sfarm/load1 action server is not available')
+            return None, False
+
+        goal_msg = Load1.Goal()
+        goal_msg.work_id = work_id
+        goal_msg.start_pos_id = start_pos_id
+        self.get_logger().info(
+            f'Sending goal to /sfarm/load1: work_id={work_id}, start_pos_id={start_pos_id}'
+        )
+
+        done_event = threading.Event()
+        holder: dict = {'result': None, 'event_sent': False}
+
+        goal_future = self.load1_client.send_goal_async(
+            goal_msg, feedback_callback=self.on_load1_feedback
+        )
+        goal_future.add_done_callback(
+            lambda fut: self.on_load1_goal_response(
+                fut, done_event, holder, work_id, sd_pos_id
+            )
+        )
+
+        deadline = self.action_timeout_sec
+        waited = 0.0
+        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
+            if done_event.wait(timeout=0.5):
+                break
+            waited += 0.5
+            if waited >= deadline:
+                self.get_logger().error(f'/sfarm/load1 timed out after {deadline}s')
+                return None, False
+
+        return holder['result'], bool(holder['event_sent'])
+
+    def on_load1_feedback(self, feedback_msg) -> None:
+        """Handle Load1 feedback (posj, posx, timestamps)."""
+        fb = feedback_msg.feedback
+        self.get_logger().info(
+            f'[/sfarm/load1 feedback] work_id={fb.work_id} '
+            f'posj={list(fb.posj)} posx={list(fb.posx)} '
+            f'start_at={fb.start_at.sec}.{fb.start_at.nanosec:09d} '
+            f'end_at={fb.end_at.sec}.{fb.end_at.nanosec:09d}'
+        )
+
+    def on_load1_goal_response(
+        self,
+        future,
+        done_event: threading.Event,
+        holder: dict,
+        work_id: int,
+        sd_pos_id: int | None,
+    ) -> None:
+        """Handle Load1 goal acceptance and attach result callback."""
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'/sfarm/load1 goal error: {exc}')
+            done_event.set()
+            return
+
+        if not goal_handle.accepted:
+            self.get_logger().warning('/sfarm/load1 goal was rejected')
+            done_event.set()
+            return
+
+        self.get_logger().info('/sfarm/load1 goal accepted')
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda fut: self.on_load1_result(
+                fut, done_event, holder, work_id, sd_pos_id
+            )
+        )
+
+    def on_load1_result(
+        self,
+        future,
+        done_event: threading.Event,
+        holder: dict,
+        work_id: int,
+        sd_pos_id: int | None,
+    ) -> None:
+        """Handle Load1 result callback and dispatch success/failure actions."""
+        try:
+            result = future.result().result
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'/sfarm/load1 result error: {exc}')
+            done_event.set()
+            return
+
+        holder['result'] = result
+        holder['event_sent'] = self.handle_load1_result(result, work_id, sd_pos_id)
+        done_event.set()
+
+    def handle_load1_result(
+        self,
+        result: Load1.Result,
+        work_id: int,
+        sd_pos_id: int | None = None,
+    ) -> bool:
+        """Process Load1 completion: pick_complete on success, stop srv + fail_load1 on failure."""
+        effective_work_id = result.work_id if result.work_id else work_id
+        if result.success:
+            self.get_logger().info(
+                f'[/sfarm/load1] succeeded: work_id={effective_work_id}'
+            )
+            event = build_pick_complete_event(effective_work_id, self.robot_id)
+            sent = self.produce(event)
+            self.on_load1_success(effective_work_id, sd_pos_id)
+            return sent
+
+        self.get_logger().error(
+            f'[/sfarm/load1] failed: work_id={effective_work_id} message={result.message}'
+        )
+        self.call_load_stop_service(
+            error_type=Error.Request.TYPE_FAIL_LOAD1,
+            work_id=effective_work_id,
+            stage=Error.Request.STAGE_LOAD1,
+            message=result.message,
+        )
+        event = build_load_fail_event(
+            stage=Error.Request.STAGE_LOAD1,
+            work_id=effective_work_id,
+            robot_id=self.robot_id,
+            message=result.message,
+        )
+        return self.produce(event)
+
+    def on_load1_success(self, work_id: int, sd_pos_id: int | None = None) -> None:
+        """Handle post-Load1 success hook (ready for Load2 dispatch)."""
+        # TODO: Load2 액션 콜백 구현 시 sd_pos_id로 /sfarm/load2 호출 연동
+        self.get_logger().info(
+            f'[/sfarm/load1] ready for Load2: work_id={work_id}, sd_pos_id={sd_pos_id}'
+        )
+
+    def call_load_stop_service(
+        self,
+        error_type: str,
+        work_id: int,
+        stage: str,
+        message: str = '',
+    ) -> None:
+        """Call the load node stop service (Error.srv) asynchronously."""
+        if not self.load_stop_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warning(
+                f'{self.load_stop_service} service is not available; skip stop request'
+            )
+            return
+
+        req = Error.Request()
+        req.type = error_type
+        req.work_id = work_id
+        req.stage = stage
+        req.message = message
+
+        future = self.load_stop_client.call_async(req)
+        future.add_done_callback(self._on_load_stop_response)
+
+    def _on_load_stop_response(self, future) -> None:
+        """Log the response from the load node stop service."""
+        try:
+            resp = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'{self.load_stop_service} call failed: {exc}')
+            return
+        self.get_logger().info(
+            f'[{self.load_stop_service}] response: '
+            f'success={resp.success} message={resp.message}'
+        )
+
     # ---------------------------------------------------------------- produce
     def build_event(self, command: dict) -> dict:
         """Build an SQS event dictionary from an incoming command."""
@@ -389,15 +639,20 @@ class SqsEchoNode(Node):
         }
         if self.event_queue_url.endswith('.fifo'):
             params['MessageGroupId'] = self.robot_id
-            params['MessageDeduplicationId'] = event['event_id']
+            params['MessageDeduplicationId'] = (
+                event.get('event_id') or f'evt-{uuid.uuid4()}'
+            )
         try:
             resp = self.sqs.send_message(**params)
         except (BotoCoreError, ClientError) as e:
             self.get_logger().error(f'produce failed: {e}')
             return False
+        summary_type = (
+            event.get('event_type') or event.get('type') or event.get('status')
+        )
         print(
             f'[PRODUCED] message_id={resp["MessageId"]} '
-            f'event_type={event["event_type"]} '
+            f'event_type={summary_type} '
             f'work_id={event.get("work_id")} job_id={event.get("job_id")}',
             flush=True,
         )
