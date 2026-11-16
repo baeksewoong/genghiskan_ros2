@@ -17,6 +17,8 @@ from DSR_ROBOT2 import (
     DR_BASE,
     OFF,
     ON,
+    get_current_posj,
+    get_current_posx,
     get_tool_force,
     movej,
     movel,
@@ -24,7 +26,7 @@ from DSR_ROBOT2 import (
     wait,
 )
 
-from sfarm_interfaces.action import Load, Unload
+from sfarm_interfaces.action import Load, Load1, Unload
 
 from . import poses
 
@@ -76,6 +78,25 @@ def read_fz() -> float:
         total += float(get_tool_force(DR_BASE)[2])
         wait(FORCE_SAMPLE_INTERVAL)
     return total / FORCE_SAMPLES
+
+
+def get_current_poses() -> tuple[list[float], list[float]]:
+    """현재 로봇의 관절 좌표(posj)와 직교 좌표(posx)를 float[6] 리스트로 반환."""
+    cur_j = get_current_posj()
+    posj_vals = (
+        [float(v) for v in cur_j[:6]]
+        if isinstance(cur_j, (list, tuple)) and len(cur_j) >= 6
+        else [0.0] * 6
+    )
+
+    cur_x_res = get_current_posx()
+    cur_x = cur_x_res[0] if isinstance(cur_x_res, tuple) else cur_x_res
+    posx_vals = (
+        [float(v) for v in cur_x[:6]]
+        if isinstance(cur_x, (list, tuple)) and len(cur_x) >= 6
+        else [0.0] * 6
+    )
+    return posj_vals, posx_vals
 
 
 def grip_and_check(pose_x: list, log=print) -> bool:
@@ -199,6 +220,39 @@ def pick_from_board(layer: int = 3, log=print) -> bool:
 
 
 # ---------------------------------------------------------------- 작업 시퀀스
+def run_load1(goal: Load1.Goal, log=print) -> bool:
+    """Load1: 적재대(start_pos_id)로 이동해 판재를 들어 올린 뒤 무게로 성공 여부 판단.
+
+    반환값: 판재 무게가 감지됐으면 True, 아니면 False (액션 result.success로 전달됨)
+    """
+    if TEST_MODE:
+        layer = (
+            goal.start_pos_id
+            if goal.start_pos_id in poses.BOARD_LAYER_X
+            else 3
+        )
+        if layer != goal.start_pos_id:
+            log(
+                f'[Load1 TEST_MODE] start_pos_id={goal.start_pos_id} 좌표 미등록 '
+                f'-> {layer}층으로 대체 실행'
+            )
+        home_to_board(layer)
+        return grip_and_check(poses.BOARD_LAYER_X[layer], log=log)
+
+    board_approach = poses.get_pose(
+        poses.BOARD_STOCK, goal.start_pos_id, 'approach', 'BOARD_STOCK'
+    )
+    board_pick = poses.get_pose(
+        poses.BOARD_STOCK, goal.start_pos_id, 'pick', 'BOARD_STOCK'
+    )
+
+    go_home()
+    grip_open()
+    movel(posx(*board_approach), vel=VELX, acc=ACCX)
+    movel(posx(*board_pick), vel=VELX, acc=ACCX)
+    return grip_and_check(board_pick, log=log)
+
+
 def run_load(goal: Load.Goal, log=print) -> bool:
     """Load: 판재 적재대(start_pos_id)에서 집어서 3D 프린터(pos_3d_id)에 넣기.
 
