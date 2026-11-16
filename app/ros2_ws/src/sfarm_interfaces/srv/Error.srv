@@ -1,4 +1,14 @@
 # Request
+string TYPE_FAIL_LOAD1="fail_load1"
+string TYPE_FAIL_LOAD2="fail_load2"
+string STAGE_LOAD1="load1"
+string STAGE_LOAD2="load2"
+
+string type
+int8 work_id
+string stage
 string message
 ---
 # Response
+bool success
+string message

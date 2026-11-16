@@ -12,6 +12,8 @@ find_package(builtin_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/Load.action"
+  "action/Load1.action"
+  "action/Load2.action"
   "action/Unload.action"
   "srv/Error.srv"
   DEPENDENCIES action_msgs builtin_interfaces

@@ -15,14 +15,19 @@
 """Unit tests for sfarm_bridge SQS event payload formatting."""
 
 from datetime import datetime
+from unittest.mock import MagicMock
 
 from sfarm_bridge.sfarm_bridge import (
     build_action_result_event,
+    build_load_fail_event,
+    build_pick_complete_event,
     build_robot_event,
     DEFAULT_EVENT_QUEUE_URL,
     parse_task_command,
+    SqsEchoNode,
 )
-from sfarm_interfaces.action import Load
+from sfarm_interfaces.action import Load, Load1
+from sfarm_interfaces.srv import Error
 
 
 def test_default_event_queue_url():
@@ -114,3 +119,63 @@ def test_build_action_result_event():
     assert evt['work_type'] == 'load'
     assert evt['success'] is True
     assert evt['message'] == 'done'
+
+
+def test_build_pick_complete_and_fail_load1_events():
+    """Verify Load1 success and failure SQS event payloads."""
+    pick_evt = build_pick_complete_event(work_id=42, robot_id='robot-arm-1')
+    assert pick_evt['work_id'] == 42
+    assert pick_evt['status'] == 'pick_complete'
+    assert pick_evt['robot_id'] == 'robot-arm-1'
+    assert pick_evt['event_id'].startswith('evt-')
+
+    fail_evt = build_load_fail_event(
+        stage=Error.Request.STAGE_LOAD1,
+        work_id=42,
+        robot_id='robot-arm-1',
+        message='weight check failed',
+    )
+    assert fail_evt['type'] == 'fail_load1'
+    assert fail_evt['work_id'] == 42
+    assert fail_evt['stage'] == 'load1'
+    assert fail_evt['success'] is False
+    assert fail_evt['message'] == 'weight check failed'
+
+
+def test_handle_load1_result_success_and_failure():
+    """Verify Load1 result callback triggers pick_complete or stop srv + fail_load1."""
+    fake_node = MagicMock()
+    fake_node.robot_id = 'robot-arm-1'
+    fake_node.produce.return_value = True
+
+    ok_res = Load1.Result()
+    ok_res.work_id = 42
+    ok_res.success = True
+    ok_res.message = 'ok'
+
+    assert SqsEchoNode.handle_load1_result(fake_node, ok_res, 42, sd_pos_id=2) is True
+    produced_ok = fake_node.produce.call_args[0][0]
+    assert produced_ok['status'] == 'pick_complete'
+    assert produced_ok['work_id'] == 42
+    fake_node.on_load1_success.assert_called_once_with(42, 2)
+    fake_node.call_load_stop_service.assert_not_called()
+
+    fake_node.reset_mock()
+    fake_node.produce.return_value = True
+
+    fail_res = Load1.Result()
+    fail_res.work_id = 43
+    fail_res.success = False
+    fail_res.message = 'underweight'
+
+    assert SqsEchoNode.handle_load1_result(fake_node, fail_res, 43, sd_pos_id=1) is True
+    fake_node.call_load_stop_service.assert_called_once_with(
+        error_type='fail_load1',
+        work_id=43,
+        stage='load1',
+        message='underweight',
+    )
+    produced_fail = fake_node.produce.call_args[0][0]
+    assert produced_fail['type'] == 'fail_load1'
+    assert produced_fail['work_id'] == 43
+    assert produced_fail['stage'] == 'load1'
