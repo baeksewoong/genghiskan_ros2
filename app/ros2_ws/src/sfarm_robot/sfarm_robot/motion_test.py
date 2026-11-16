@@ -120,14 +120,7 @@ def pick_from_board(motions, layer: int = 3) -> bool:
 
 def build_commands(motions):
     """메뉴 이름 -> (설명, 실행 함수(인자 리스트)) 표."""
-<<<<<<< HEAD
-    from sfarm_interfaces.action import Load, Load1, Unload
-
-    def load1(args):
-        s = int(args[0]) if len(args) > 0 else 3
-        return motions.run_load1(Load1.Goal(work_id=0, start_pos_id=s))
-=======
-    from sfarm_interfaces.action import Load, Load2, Unload
+    from sfarm_interfaces.action import Load, Load1, Load2, Unload
 
     from sfarm_robot import force_test  # 힘 측정 테스트 (DR_init 설정 후라 여기서 import)
 
@@ -142,10 +135,13 @@ def build_commands(motions):
         motions.go_sd(int(args[0]) if args else 3)
         motions.align_push_axis()
 
+    def load1(args):
+        s = int(args[0]) if len(args) > 0 else 3
+        return motions.run_load1(Load1.Goal(work_id=0, start_pos_id=s))
+
     def load2(args):
         s = int(args[0]) if args else 3
         return motions.run_load2(Load2.Goal(work_id=0, sd_pos_id=s))
->>>>>>> a9eb9bd (sfarm_robot: 새 적재대/작업대 좌표, pullout, Load2(sd_pos_id) 작업대 넣기(순응 제어 + 완료 위치/반력 판정), force_test 추가)
 
     def load(args):
         s = int(args[0]) if len(args) > 0 else 3
@@ -217,18 +213,13 @@ def build_commands(motions):
         'force': ('현재 Fz(N) 측정', force),
         'grip': ('그리퍼 닫기', lambda a: motions.grip_close()),
         'release': ('그리퍼 열기', lambda a: motions.grip_open()),
-<<<<<<< HEAD
-        'load1': ('run_load1 [start_pos_id=3]  => True/False', load1),
-        'load': ('run_load [start_pos_id=3] [pos_3d_id=1]  => True/False', load),
-        'unload': ('run_unload [pos_3d_id=1] [receive_pos_id=1]', unload),
-=======
+        'load1': ('run_load1 [start_pos_id(층)=3]  => True/False', load1),
         'load': ('run_load [start_pos_id(층)=3] (액션과 같은 동작: 잡고 들기, 멈춤)  => True/False', load),
         'unload': ('run_unload (아직 동작 없음: 홈 이동)', unload),
         'fmon': ('[힘 테스트] 그 자리에서 힘 변화만 계속 출력 [초=10] (안 움직임)',
                  lambda a: force_test.fmon(float(a[0]) if a else 10.0)),
         'pushtest': ('[힘 테스트] 순응 제어로 [축=x] 방향 [mm=20]을 [step=2]씩 밀며 힘 출력 (그리퍼 그대로)',
                      pushtest),
->>>>>>> a9eb9bd (sfarm_robot: 새 적재대/작업대 좌표, pullout, Load2(sd_pos_id) 작업대 넣기(순응 제어 + 완료 위치/반력 판정), force_test 추가)
     }
 
 

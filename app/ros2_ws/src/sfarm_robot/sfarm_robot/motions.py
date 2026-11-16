@@ -26,10 +26,7 @@ from DSR_ROBOT2 import (
     DR_BASE,
     OFF,
     ON,
-<<<<<<< HEAD
-=======
     align_axis,
->>>>>>> a9eb9bd (sfarm_robot: 새 적재대/작업대 좌표, pullout, Load2(sd_pos_id) 작업대 넣기(순응 제어 + 완료 위치/반력 판정), force_test 추가)
     get_current_posj,
     get_current_posx,
     get_tool_force,
@@ -41,11 +38,7 @@ from DSR_ROBOT2 import (
     wait,
 )
 
-<<<<<<< HEAD
-from sfarm_interfaces.action import Load, Load1, Unload
-=======
-from sfarm_interfaces.action import Load, Load2, Unload
->>>>>>> a9eb9bd (sfarm_robot: 새 적재대/작업대 좌표, pullout, Load2(sd_pos_id) 작업대 넣기(순응 제어 + 완료 위치/반력 판정), force_test 추가)
+from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
 
 from . import poses
 
@@ -135,7 +128,6 @@ def read_fz() -> float:
     return total / FORCE_SAMPLES
 
 
-<<<<<<< HEAD
 def get_current_poses() -> tuple[list[float], list[float]]:
     """현재 로봇의 관절 좌표(posj)와 직교 좌표(posx)를 float[6] 리스트로 반환."""
     cur_j = get_current_posj()
@@ -153,7 +145,8 @@ def get_current_poses() -> tuple[list[float], list[float]]:
         else [0.0] * 6
     )
     return posj_vals, posx_vals
-=======
+
+
 def go_ready(layer: int) -> None:
     """layer층 준비 위치(1단계: 홈 자리에서 그리퍼를 옆으로 눕힌 자세)로 이동.
 
@@ -227,7 +220,6 @@ def home_to_board(layer: int = 3, until: int | None = None, before_step=None) ->
         if before_step is not None and before_step(i, name) is False:
             raise MotionStopped(f'{i}단계({name}) 전에 멈춤')
         move()
->>>>>>> a9eb9bd (sfarm_robot: 새 적재대/작업대 좌표, pullout, Load2(sd_pos_id) 작업대 넣기(순응 제어 + 완료 위치/반력 판정), force_test 추가)
 
 
 def grip_and_check(pose_x: list, log=print) -> bool:
@@ -523,42 +515,6 @@ def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
     return finished
 
 
-<<<<<<< HEAD
-# ---------------------------------------------------------------- 작업 시퀀스
-def run_load1(goal: Load1.Goal, log=print) -> bool:
-    """Load1: 적재대(start_pos_id)로 이동해 판재를 들어 올린 뒤 무게로 성공 여부 판단.
-
-    반환값: 판재 무게가 감지됐으면 True, 아니면 False (액션 result.success로 전달됨)
-    """
-    if TEST_MODE:
-        layer = (
-            goal.start_pos_id
-            if goal.start_pos_id in poses.BOARD_LAYER_X
-            else 3
-        )
-        if layer != goal.start_pos_id:
-            log(
-                f'[Load1 TEST_MODE] start_pos_id={goal.start_pos_id} 좌표 미등록 '
-                f'-> {layer}층으로 대체 실행'
-            )
-        home_to_board(layer)
-        return grip_and_check(poses.BOARD_LAYER_X[layer], log=log)
-
-    board_approach = poses.get_pose(
-        poses.BOARD_STOCK, goal.start_pos_id, 'approach', 'BOARD_STOCK'
-    )
-    board_pick = poses.get_pose(
-        poses.BOARD_STOCK, goal.start_pos_id, 'pick', 'BOARD_STOCK'
-    )
-
-    go_home()
-    grip_open()
-    movel(posx(*board_approach), vel=VELX, acc=ACCX)
-    movel(posx(*board_pick), vel=VELX, acc=ACCX)
-    return grip_and_check(board_pick, log=log)
-
-
-=======
 def retreat_sd(layer: int = 3, log=print) -> None:
     """(insert로 판재를 놓은 뒤) 그리퍼만 넣은 직선 그대로 거꾸로 빼서 입구 -> 첫 점으로. 그리퍼는 그대로."""
     front, done, _, _ = _insert_line(layer)
@@ -576,7 +532,18 @@ def retreat_sd(layer: int = 3, log=print) -> None:
 
 
 # ---------------------------------------------------------------- 액션 콜백에서 호출
->>>>>>> a9eb9bd (sfarm_robot: 새 적재대/작업대 좌표, pullout, Load2(sd_pos_id) 작업대 넣기(순응 제어 + 완료 위치/반력 판정), force_test 추가)
+def run_load1(goal: Load1.Goal, log=print) -> bool:
+    """Load1: 홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인 -> 그 자리에서 멈춤.
+
+    반환값: 판재 무게가 감지됐으면 True, 아니면 False (액션 result.success로 전달됨)
+    좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
+    """
+    layer = goal.start_pos_id
+    log(f'[load1] 적재대 {layer}층')
+    home_to_board(layer)
+    return grip_and_check(poses.START_POS_PICK_X[layer], log=log)
+
+
 def run_load(goal: Load.Goal, log=print) -> bool:
     """Load: 홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인 -> 그 자리에서 멈춤.
 
@@ -605,6 +572,13 @@ def run_load2(goal: Load2.Goal, log=print) -> bool:
         log(f'[load2] 작업대 {layer}층 넣기 좌표 없음 -> 작업대 앞에서 멈춤')
         return True
     return insert_sd(layer, log=log)  # 턱에 걸려 놓았으면 True, 아니면 False (잡은 채로)
+
+
+def run_unload1(goal: Unload1.Goal, log=print) -> bool:
+    """Unload1: 아직 동작 없음. 홈 위치로만 이동."""
+    log(f'[unload1] 아직 동작 없음 -> 홈 이동 (sd_pos_id={goal.sd_pos_id})')
+    go_home()
+    return True
 
 
 def run_unload(goal: Unload.Goal, log=print) -> bool:

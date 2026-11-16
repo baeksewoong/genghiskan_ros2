@@ -232,11 +232,11 @@ def test_handle_load2_result_success_and_failure():
     }
 
 
-def test_handle_message_load1_and_load2_success_comm_test():
-    """Verify LOAD1 and LOAD2 wait 3s and send success events during comm test."""
+def test_handle_message_load1_and_load2_dispatch():
+    """Verify SQS LOAD1 and LOAD2 messages dispatch real ROS 2 actions."""
     fake_node = MagicMock()
-    fake_node.stop.wait.return_value = False
-    fake_node.produce.return_value = True
+    res1 = Load1.Result(work_id=179, success=True)
+    fake_node.execute_load1.return_value = (res1, True)
     msg1 = {
         'MessageId': 'msg-179-1',
         'ReceiptHandle': 'rh-179-1',
@@ -245,17 +245,16 @@ def test_handle_message_load1_and_load2_success_comm_test():
 
     SqsEchoNode.handle_message(fake_node, msg1)
 
-    fake_node.stop.wait.assert_called_once_with(3.0)
-    fake_node.execute_load1.assert_not_called()
-    assert fake_node.produce.call_args[0][0] == {
-        'type': 'success_load1',
-        'work_id': 179,
-    }
+    fake_node.execute_load1.assert_called_once_with(
+        work_id=179,
+        start_pos_id=3,
+        sd_pos_id=None,
+    )
     fake_node.delete.assert_called_once_with(msg1)
 
     fake_node.reset_mock()
-    fake_node.stop.wait.return_value = False
-    fake_node.produce.return_value = True
+    res2 = Load2.Result(work_id=179, success=True)
+    fake_node.execute_load2.return_value = (res2, True)
     msg2 = {
         'MessageId': 'msg-179-2',
         'ReceiptHandle': 'rh-179-2',
@@ -264,12 +263,7 @@ def test_handle_message_load1_and_load2_success_comm_test():
 
     SqsEchoNode.handle_message(fake_node, msg2)
 
-    fake_node.stop.wait.assert_called_once_with(3.0)
-    fake_node.execute_load2.assert_not_called()
-    assert fake_node.produce.call_args[0][0] == {
-        'type': 'success_load2',
-        'work_id': 179,
-    }
+    fake_node.execute_load2.assert_called_once_with(work_id=179, sd_pos_id=2)
     fake_node.delete.assert_called_once_with(msg2)
 
 
@@ -316,18 +310,12 @@ def test_build_and_handle_unload1_result():
     }
 
     fake_node.reset_mock()
-    fake_node.stop.wait.return_value = False
-    fake_node.produce.return_value = True
+    fake_node.execute_unload1.return_value = (ok_res, True)
     msg_u1 = {
         'MessageId': 'msg-180',
         'ReceiptHandle': 'rh-180',
         'Body': '{"type": "unload1", "work_id": 180, "sd_pos_id": 2}',
     }
     SqsEchoNode.handle_message(fake_node, msg_u1)
-    fake_node.stop.wait.assert_called_once_with(3.0)
-    fake_node.execute_unload1.assert_not_called()
-    assert fake_node.produce.call_args[0][0] == {
-        'type': 'success_unload1',
-        'work_id': 180,
-    }
+    fake_node.execute_unload1.assert_called_once_with(work_id=180, sd_pos_id=2)
     fake_node.delete.assert_called_once_with(msg_u1)
