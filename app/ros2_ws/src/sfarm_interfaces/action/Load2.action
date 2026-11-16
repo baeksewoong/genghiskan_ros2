@@ -4,7 +4,6 @@ int8 sd_pos_id
 ---
 # Result (output)
 bool success
-string message
 int32 work_id
 ---
 # Feedback

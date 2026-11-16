@@ -1,0 +1,14 @@
+# Goal (input)
+int32 work_id
+int8 sd_pos_id
+---
+# Result (output)
+bool success
+int32 work_id
+---
+# Feedback
+float64[6] posj
+float64[6] posx
+builtin_interfaces/Time start_at
+builtin_interfaces/Time end_at
+int32 work_id

@@ -1,8 +1,10 @@
 # Request
 string TYPE_FAIL_LOAD1="fail_load1"
 string TYPE_FAIL_LOAD2="fail_load2"
+string TYPE_FAIL_UNLOAD1="fail_unload1"
 string STAGE_LOAD1="load1"
 string STAGE_LOAD2="load2"
+string STAGE_UNLOAD1="unload1"
 
 string type
 int32 work_id
