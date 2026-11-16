@@ -46,6 +46,11 @@ class PrinterRepository:
         return (await session.execute(lock_for_update(stmt, session))).scalars().first()
 
     @staticmethod
+    async def get_locked(session: AsyncSession, slot: int) -> Printer | None:
+        stmt = select(Printer).where(Printer.slot == slot)
+        return (await session.execute(lock_for_update(stmt, session))).scalars().first()
+
+    @staticmethod
     async def get_expired_printing(session: AsyncSession, now: datetime) -> list[Printer]:
         stmt = select(Printer).where(Printer.status == PrinterStatus.PRINTING, Printer.timer_ends_at <= now)
         return list((await session.execute(stmt)).scalars().all())

@@ -49,7 +49,7 @@ function upsertOrder(snapshot: StateSnapshot, order: Order): StateSnapshot {
   return { ...snapshot, waiting_orders, active_orders, pickup_orders };
 }
 
-function summarize(type: string, data: Record<string, unknown>): string {
+export function summarize(type: string, data: Record<string, unknown>): string {
   switch (type) {
     case "order.created":
       return `주문 생성 #${data.id} (${data.shape})`;

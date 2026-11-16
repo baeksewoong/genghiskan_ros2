@@ -39,7 +39,7 @@ class Order(Base):
     status: Mapped[OrderStatus] = mapped_column(
         SAEnum(OrderStatus, native_enum=True, length=20), default=OrderStatus.WAITING
     )
-    source: Mapped[OrderSource] = mapped_column(SAEnum(OrderSource, native_enum=True, length=8))
+    source: Mapped[OrderSource] = mapped_column(SAEnum(OrderSource, native_enum=True, length=12))
     printer_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)

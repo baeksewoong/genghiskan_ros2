@@ -4,12 +4,14 @@ import { OrderForm } from "../components/organisms/OrderForm";
 import { BoardStockPanel } from "../components/organisms/BoardStockPanel";
 import { BoardStockRefillModal } from "../components/organisms/BoardStockRefillModal";
 import { LoadPickFailedModal } from "../components/organisms/LoadPickFailedModal";
+import { PickupPanel } from "../components/organisms/PickupPanel";
+import { PrinterPanel } from "../components/organisms/PrinterPanel";
 import { useLiveState } from "../hooks/useLiveState";
 import { api, WorkRequestError } from "../lib/api";
 import type { Shape } from "../types";
 
 export function DashboardPage() {
-  const { alert, setAlert, loadFailedAlert, setLoadFailedAlert, boardStock } = useLiveState();
+  const { alert, setAlert, loadFailedAlert, setLoadFailedAlert, boardStock, snapshot } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
 
   const handleOrder = async (customerName: string, shape: Shape) => {
@@ -30,15 +32,32 @@ export function DashboardPage() {
     setAlert(null);
   };
 
+  const handlePickUp = async (orderId: number) => {
+    try {
+      await api.pickUpOrder(orderId);
+    } catch (e) {
+      console.error("수령 처리 실패:", e);
+    }
+  };
+
   const handleRetryLoad = async (workId: number) => {
-    await api.retryLoad(workId);
-    setLoadFailedAlert(null);
+    // 재전송이 실패해도(예: 타임아웃으로 작업이 이미 종료됨) 모달은 닫는다 —
+    // 갇힌 알럿보다는 실패를 콘솔 로그로 남기는 쪽이 낫다.
+    try {
+      await api.retryLoad(workId);
+    } catch (e) {
+      console.error("LOAD 재전송 실패:", e);
+    } finally {
+      setLoadFailedAlert(null);
+    }
   };
 
   return (
     <DashboardTemplate
       orderForm={<OrderForm onOrder={handleOrder} error={orderError} />}
       boardStock={<BoardStockPanel slots={boardStock} />}
+      printers={<PrinterPanel printers={snapshot?.printers ?? null} />}
+      pickup={<PickupPanel orders={snapshot?.pickup_orders ?? null} onPickUp={handlePickUp} />}
       modal={
         <>
           <BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />

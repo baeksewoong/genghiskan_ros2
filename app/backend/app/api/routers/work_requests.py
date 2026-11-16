@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
-from app.models import Order
 from app.schemas import OrderCreateRequest, OrderOut
+from app.services.order_presenter import build_order_out
 from app.services.work_request_service import (
     BoardEmptyError,
     LoadRetryNotFoundError,
@@ -17,9 +17,10 @@ router = APIRouter(prefix="/api/work-requests", tags=["work-requests"])
 @router.post("", response_model=OrderOut, status_code=201)
 async def create_work_request(
     req: OrderCreateRequest, session: AsyncSession = Depends(get_session)
-) -> Order:
+) -> OrderOut:
     try:
-        return await WorkRequestService.create(session, req.shape, customer_name=req.customer_name)
+        order = await WorkRequestService.create(session, req.shape, customer_name=req.customer_name)
+        return await build_order_out(session, order)
     except BoardEmptyError as exc:
         raise HTTPException(
             status_code=409,

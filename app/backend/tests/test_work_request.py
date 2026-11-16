@@ -8,6 +8,7 @@ from app.enums import BoardStockStatus, OrderStatus, PrinterStatus, TaskStatus, 
 from app.models import BoardStock, Order, Printer, RobotTask
 from app.repositories.board_stock_repository import BoardStockRepository
 from app.services.board_stock_service import BoardStockService
+from app.services.dispatcher_service import DispatcherService
 from app.services.sqs_producer_service import SqsProducerService
 from app.services.work_request_service import BoardEmptyError, SqsProduceError, WorkRequestService
 
@@ -42,6 +43,27 @@ async def test_board_empty_returns_error_but_keeps_order_waiting():
 
         tasks = (await session.execute(select(RobotTask))).scalars().all()
         assert tasks == []
+
+
+async def test_virtual_robot_dispatcher_ignores_stuck_work_request_order():
+    """board_stock이 비어 WAITING으로 남은 작업요청 주문을, 가상 로봇 경로의
+    DispatcherService가 board 체크 없이 멋대로 집어가 버리던 버그의 회귀 테스트."""
+    with pytest.raises(BoardEmptyError):
+        async with AsyncSessionLocal() as session:
+            await WorkRequestService.create(session, shape=None)
+
+    await DispatcherService.run_cycle()  # 로봇 IDLE + 빈 프린터 있음 → 예전엔 여기서 집어갔다
+
+    async with AsyncSessionLocal() as session:
+        order = (await session.execute(select(Order))).scalars().one()
+        assert order.status == OrderStatus.WAITING  # LOADING으로 바뀌면 안 된다
+
+        tasks = (await session.execute(select(RobotTask))).scalars().all()
+        assert tasks == []  # 가상 로봇 LOAD 작업이 생성되면 안 된다
+
+        for slot in (1, 2, 3):
+            printer = await session.get(Printer, slot)
+            assert printer.status == PrinterStatus.EMPTY
 
 
 async def test_dispatch_does_not_need_a_printer(monkeypatch):
@@ -156,6 +178,35 @@ async def test_load_success_with_no_empty_printer_still_frees_board(monkeypatch)
 
         board = await session.get(BoardStock, 2)
         assert board.status == BoardStockStatus.EMPTY
+
+
+async def test_place_success_starts_printing_with_timer(monkeypatch):
+    await _occupy(2)
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
+    monkeypatch.setattr(SqsProducerService, "produce_place_command", _fake_produce(True))
+
+    async with AsyncSessionLocal() as session:
+        order = await WorkRequestService.create(session, shape=None)
+
+    await WorkRequestService.handle_load_success(order.id)
+    await WorkRequestService.handle_place_success(order.id)
+
+    async with AsyncSessionLocal() as session:
+        refreshed = await session.get(Order, order.id)
+        assert refreshed.status == OrderStatus.PRINTING
+        assert refreshed.started_at is not None
+
+        printer = await session.get(Printer, 1)
+        assert printer.status == PrinterStatus.PRINTING
+        assert printer.timer_ends_at is not None
+
+        task = (await session.execute(select(RobotTask))).scalars().one()
+        assert task.status == TaskStatus.SUCCEEDED
+        assert task.finished_at is not None
+
+
+async def test_place_success_ignores_unknown_work_id():
+    await WorkRequestService.handle_place_success(999999)  # 예외 없이 조용히 무시
 
 
 async def test_load_success_ignores_unknown_work_id():

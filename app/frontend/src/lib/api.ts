@@ -1,4 +1,4 @@
-import type { BoardStockSlot, Order, Shape, SimulatorSettings, SqsStatus, StateSnapshot } from "../types";
+import type { BoardStockSlot, Envelope, Order, Shape, SimulatorSettings, SqsStatus, StateSnapshot } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -52,6 +52,10 @@ async function retryLoad(workId: number): Promise<void> {
   }
 }
 
+async function pickUpOrder(orderId: number): Promise<Order> {
+  return request<Order>(`/api/orders/${orderId}/pickup`, { method: "POST" });
+}
+
 export const api = {
   getState: () => request<StateSnapshot>("/api/state"),
 
@@ -86,6 +90,13 @@ export const api = {
   // SQS 모니터링 페이지 전용: 큐 깊이(ApproximateNumberOfMessages 등)만 조회한다.
   getSqsStatus: () => request<SqsStatus>("/api/sqs/status"),
 
+  // SQS 모니터링 페이지 전용: event_logs에 저장된 과거 sqs.* 메시지 히스토리(최신순).
+  getSqsHistory: (limit = 200) =>
+    request<Envelope<Record<string, unknown>>[]>(`/api/sqs/history?limit=${limit}`),
+
   // 베드 집기 실패 알럿("확인") 전용: 같은 work_id로 LOAD 명령을 SQS에 재전송한다.
   retryLoad,
+
+  // 수령대 "수령하기" 버튼 전용: 눌렀을 때만 주문을 수령대에서 내린다.
+  pickUpOrder,
 };
