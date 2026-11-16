@@ -364,66 +364,45 @@ class SqsEchoNode(Node):
             return
 
         if action_kind == 'LOAD':
-            # [임시 성공 통신 테스트용] 실제 Load1 액션 실행 주석 처리 후 3초 뒤 success_load1만 SQS로 발행
-            # result, event_sent = self.execute_load1(
-            #     work_id=goal_fields['work_id'],
-            #     start_pos_id=goal_fields['start_pos_id'],
-            #     sd_pos_id=goal_fields['sd_pos_id'],
-            # )
-            # if result is None:
-            #     self.get_logger().warning(
-            #         'LOAD1 action did not complete; keeping SQS message for retry'
-            #     )
-            #     return
-            # if event_sent:
-            #     self.delete(message)
-            # return
-            if self.stop.wait(3.0):
+            result, event_sent = self.execute_load1(
+                work_id=goal_fields['work_id'],
+                start_pos_id=goal_fields['start_pos_id'],
+                sd_pos_id=goal_fields['sd_pos_id'],
+            )
+            if result is None:
+                self.get_logger().warning(
+                    'LOAD1 action did not complete; keeping SQS message for retry'
+                )
                 return
-            event = build_load1_result_event(goal_fields['work_id'], success=True)
-            if self.produce(event):
+            if event_sent:
                 self.delete(message)
             return
 
         if action_kind == 'LOAD2':
-            # [임시 성공 통신 테스트용] 실제 Load2 액션 실행 주석 처리 후 3초 뒤 success_load2만 SQS로 발행
-            # result, event_sent = self.execute_load2(
-            #     work_id=goal_fields['work_id'],
-            #     sd_pos_id=goal_fields['sd_pos_id'],
-            # )
-            # if result is None:
-            #     self.get_logger().warning(
-            #         'LOAD2 action did not complete; keeping SQS message for retry'
-            #     )
-            #     return
-            # if event_sent:
-            #     self.delete(message)
-            # return
-            if self.stop.wait(3.0):
+            result, event_sent = self.execute_load2(
+                work_id=goal_fields['work_id'],
+                sd_pos_id=goal_fields['sd_pos_id'],
+            )
+            if result is None:
+                self.get_logger().warning(
+                    'LOAD2 action did not complete; keeping SQS message for retry'
+                )
                 return
-            event = build_load2_result_event(goal_fields['work_id'], success=True)
-            if self.produce(event):
+            if event_sent:
                 self.delete(message)
             return
 
         if action_kind == 'UNLOAD1':
-            # [임시 성공 통신 테스트용] 실제 Unload1 액션 실행 주석 처리 후 success_unload1만 SQS로 발행
-            # result, event_sent = self.execute_unload1(
-            #     work_id=goal_fields['work_id'],
-            #     sd_pos_id=goal_fields['sd_pos_id'],
-            # )
-            # if result is None:
-            #     self.get_logger().warning(
-            #         'UNLOAD1 action did not complete; keeping SQS message for retry'
-            #     )
-            #     return
-            # if event_sent:
-            #     self.delete(message)
-            # return
-            if self.stop.wait(3.0):
+            result, event_sent = self.execute_unload1(
+                work_id=goal_fields['work_id'],
+                sd_pos_id=goal_fields['sd_pos_id'],
+            )
+            if result is None:
+                self.get_logger().warning(
+                    'UNLOAD1 action did not complete; keeping SQS message for retry'
+                )
                 return
-            event = build_unload1_result_event(goal_fields['work_id'], success=True)
-            if self.produce(event):
+            if event_sent:
                 self.delete(message)
             return
 
