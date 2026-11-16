@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { Envelope, Order, SimulatorSettings, StateSnapshot } from "../types";
+import type { BoardStockSlot, Envelope, Order, SimulatorSettings, StateSnapshot } from "../types";
 import type { TaskType } from "../lib/robotArm";
 
 export interface LogEntry {
@@ -8,11 +8,17 @@ export interface LogEntry {
   ts: string;
   type: string;
   summary: string;
+  data: Record<string, unknown>;
 }
 
 export interface RefillAlert {
   // 작업요청(SQS) 경로 전용: 적재대(board_stock)가 비었을 때의 알럿.
   reason: "BOARD_STOCK_EMPTY";
+}
+
+export interface LoadPickFailedAlert {
+  // robot-events의 베드 집기 실패 이벤트(예: {"work_id":1,"type":"fail_load1"}) 수신 시.
+  work_id: number;
 }
 
 export interface FeedbackEvent {
@@ -63,6 +69,18 @@ function summarize(type: string, data: Record<string, unknown>): string {
       return "알럿 해제";
     case "bridge.connection":
       return `로봇 연결 ${data.connected ? "됨" : "끊김"}`;
+    case "sqs.command_sent":
+      return `SQS 발행 성공 (work_id=${data.work_id})`;
+    case "sqs.command_failed":
+      return `SQS 발행 실패 (work_id=${data.work_id})`;
+    case "sqs.command_skipped":
+      return `SQS 발행 건너뜀: ${data.reason}`;
+    case "sqs.event_received":
+      return `SQS 수신 (robot-events)`;
+    case "sqs.event_parse_error":
+      return `SQS 메시지 파싱 실패`;
+    case "alert.load_pick_failed":
+      return `알럿: 베드 집기 실패 (work_id=${data.work_id})`;
     default:
       return type;
   }
@@ -72,8 +90,14 @@ export function useLiveState() {
   const [snapshot, setSnapshot] = useState<StateSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const [alert, setAlert] = useState<RefillAlert | null>(null);
+  const [loadFailedAlert, setLoadFailedAlert] = useState<LoadPickFailedAlert | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
+  // SQS 모니터링 페이지 전용: 다른 이벤트(robot.state 하트비트 등)에 밀려 log(50개 캡)에서
+  // 잘려나가지 않도록 sqs.* 이벤트만 따로 쌓아둔다.
+  const [sqsLog, setSqsLog] = useState<LogEntry[]>([]);
   const [feedback, setFeedback] = useState<FeedbackEvent | null>(null);
+  // 적재대(board_stock) 현황 — home의 적재대 현황 UI 전용.
+  const [boardStock, setBoardStock] = useState<BoardStockSlot[] | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -94,12 +118,17 @@ export function useLiveState() {
 
       ws.onmessage = (event) => {
         const envelope: Envelope<Record<string, unknown>> = JSON.parse(event.data);
-        setLog((prev) =>
-          [
-            { id: envelope.event_id, ts: envelope.ts, type: envelope.type, summary: summarize(envelope.type, envelope.data) },
-            ...prev,
-          ].slice(0, 50)
-        );
+        const entry: LogEntry = {
+          id: envelope.event_id,
+          ts: envelope.ts,
+          type: envelope.type,
+          summary: summarize(envelope.type, envelope.data),
+          data: envelope.data,
+        };
+        setLog((prev) => [entry, ...prev].slice(0, 50));
+        if (envelope.type.startsWith("sqs.")) {
+          setSqsLog((prev) => [entry, ...prev].slice(0, 200));
+        }
 
         setSnapshot((prev) => {
           if (envelope.type === "state.snapshot") {
@@ -135,11 +164,23 @@ export function useLiveState() {
           setAlert({ reason: (envelope.data as any).reason });
         } else if (envelope.type === "alert.cleared") {
           setAlert(null);
+        } else if (envelope.type === "alert.load_pick_failed") {
+          setLoadFailedAlert({ work_id: (envelope.data as any).work_id });
+        } else if (envelope.type === "board_stock.updated") {
+          const slots = (envelope.data as any).slots as { slot: number; status: BoardStockSlot["status"] }[];
+          setBoardStock((prev) => {
+            const base: BoardStockSlot[] = prev ?? slots.map((s) => ({ ...s, updated_at: "" }));
+            return base.map((s) => {
+              const match = slots.find((x) => x.slot === s.slot);
+              return match ? { ...s, status: match.status } : s;
+            });
+          });
         }
       };
     }
 
     api.getState().then(setSnapshot).catch(() => undefined);
+    api.getBoardStock().then(setBoardStock).catch(() => undefined);
     connect();
 
     return () => {
@@ -153,5 +194,17 @@ export function useLiveState() {
     setSnapshot((prev) => (prev ? { ...prev, simulator: { ...prev.simulator, ...patch } } : prev));
   }
 
-  return { snapshot, connected, alert, log, setAlert, feedback, updateSimulator };
+  return {
+    snapshot,
+    connected,
+    alert,
+    loadFailedAlert,
+    log,
+    sqsLog,
+    setAlert,
+    setLoadFailedAlert,
+    feedback,
+    updateSimulator,
+    boardStock,
+  };
 }

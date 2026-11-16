@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import board_stock, debug, health, orders, simulator, state, stats, work_requests
+from app.api.routers import board_stock, debug, health, orders, simulator, sqs, state, stats, work_requests
 from app.api.ws import bridge_ws, client_ws
 from app.core.bootstrap import ensure_seed_data
 from app.core.config import settings
@@ -57,6 +57,7 @@ app.include_router(stats.router)
 app.include_router(health.router)
 app.include_router(work_requests.router)
 app.include_router(board_stock.router)
+app.include_router(sqs.router)
 
 app.include_router(client_ws.router)
 app.include_router(bridge_ws.router)

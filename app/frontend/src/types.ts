@@ -75,3 +75,19 @@ export interface Envelope<T = unknown> {
   ts: string;
   data: T;
 }
+
+// SQS 모니터링 페이지 전용.
+export interface SqsQueueStatus {
+  name: string;
+  configured: boolean;
+  queue_url: string | null;
+  visible?: number;
+  in_flight?: number;
+  delayed?: number;
+  error?: string;
+}
+
+export interface SqsStatus {
+  command_queue: SqsQueueStatus;
+  event_queue: SqsQueueStatus;
+}
