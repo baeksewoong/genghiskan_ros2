@@ -70,7 +70,9 @@ class RobotTask(Base):
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("orders.id"))
     type: Mapped[TaskType] = mapped_column(SAEnum(TaskType, native_enum=True, length=8))
-    printer_slot: Mapped[int] = mapped_column(SmallInteger)
+    # 작업요청(SQS) 경로: dispatch 시점엔 프린터를 모른다 — success_load1 수신 시점에
+    # 비로소 정해진다 (그 전까지는 NULL).
+    printer_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         SAEnum(TaskStatus, native_enum=True, length=16), default=TaskStatus.DISPATCHED
     )

@@ -65,7 +65,7 @@ class RobotTaskOut(BaseModel):
     id: int
     order_id: int
     type: TaskType
-    printer_slot: int
+    printer_slot: int | None
     status: TaskStatus
     last_phase: str | None
     error_code: str | None

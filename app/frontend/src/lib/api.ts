@@ -1,4 +1,4 @@
-import type { BoardStockSlot, Order, Shape, SimulatorSettings, StateSnapshot } from "../types";
+import type { BoardStockSlot, Order, Shape, SimulatorSettings, SqsStatus, StateSnapshot } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -43,6 +43,15 @@ async function createWorkRequest(customerName: string, shape: Shape): Promise<Or
   return body as Order;
 }
 
+async function retryLoad(workId: number): Promise<void> {
+  const res = await fetch(`/api/work-requests/${workId}/retry-load`, { method: "POST" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = body?.detail as { error_code?: string; message?: string } | undefined;
+    throw new WorkRequestError(detail?.message ?? `재시도 실패: ${res.status}`, detail?.error_code);
+  }
+}
+
 export const api = {
   getState: () => request<StateSnapshot>("/api/state"),
 
@@ -73,4 +82,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ kind, once: true }),
     }),
+
+  // SQS 모니터링 페이지 전용: 큐 깊이(ApproximateNumberOfMessages 등)만 조회한다.
+  getSqsStatus: () => request<SqsStatus>("/api/sqs/status"),
+
+  // 베드 집기 실패 알럿("확인") 전용: 같은 work_id로 LOAD 명령을 SQS에 재전송한다.
+  retryLoad,
 };

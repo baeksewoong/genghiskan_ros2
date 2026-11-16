@@ -18,7 +18,7 @@ SHAPE_PRINT_DURATION_SEC: dict[Shape, int] = {
 
 class OrderStatus(str, Enum):
     WAITING = "WAITING"
-    # 작업요청(SQS) 경로 전용: LOAD 명령 발행 성공 ~ pick_complete 수신 전까지 ("투입중").
+    # 작업요청(SQS) 경로 전용: LOAD 명령 발행 성공 ~ success_load1 수신 전까지 ("투입중").
     # PRD: assets/docs/prd-work-request-sqs.md 5장.
     DISPATCHING = "DISPATCHING"
     LOADING = "LOADING"
@@ -75,6 +75,8 @@ class EventDirection(str, Enum):
 class AlertReason(str, Enum):
     # 작업요청(SQS) 경로 전용 (PRD: assets/docs/prd-work-request-sqs.md 5장 "채우기 완료" 버튼).
     BOARD_STOCK_EMPTY = "BOARD_STOCK_EMPTY"
+    # robot-events에서 베드 집기 실패 이벤트(예: {"work_id":1,"type":"fail_load1"})를 받았을 때.
+    LOAD_PICK_FAILED = "LOAD_PICK_FAILED"
 
 
 class BoardStockStatus(str, Enum):

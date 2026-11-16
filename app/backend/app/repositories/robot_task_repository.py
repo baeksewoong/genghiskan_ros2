@@ -26,7 +26,8 @@ class RobotTaskRepository:
 
     @staticmethod
     async def get_active_load_for_order_locked(session: AsyncSession, order_id: int) -> RobotTask | None:
-        """작업요청(SQS) 경로의 pick_complete 처리용: 해당 주문의 활성 LOAD 작업을 찾는다."""
+        """작업요청(SQS) 경로의 success_load1/fail_load1/재시도 처리용: 해당 주문의
+        활성 LOAD 작업을 찾는다."""
         stmt = (
             select(RobotTask)
             .where(

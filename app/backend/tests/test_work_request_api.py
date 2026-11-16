@@ -15,7 +15,7 @@ async def test_work_request_board_empty_returns_409(monkeypatch):
         assert detail["error_code"] == "BOARD_EMPTY"
 
 
-async def test_work_request_dispatches_when_board_and_printer_available(monkeypatch):
+async def test_work_request_dispatches_when_board_available(monkeypatch):
     async def fake_produce(*args, **kwargs) -> bool:
         return True
 
@@ -30,4 +30,5 @@ async def test_work_request_dispatches_when_board_and_printer_available(monkeypa
         assert created.status_code == 201
         body = created.json()
         assert body["status"] == "DISPATCHING"
-        assert body["printer_slot"] == 1
+        # 프린터는 dispatch 시점이 아니라 success_load1 수신 시점에 배정된다.
+        assert body["printer_slot"] is None

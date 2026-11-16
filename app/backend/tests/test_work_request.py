@@ -44,47 +44,51 @@ async def test_board_empty_returns_error_but_keeps_order_waiting():
         assert tasks == []
 
 
-async def test_no_empty_printer_keeps_order_waiting_as_success():
+async def test_dispatch_does_not_need_a_printer(monkeypatch):
+    """printer가 전부 차있어도 dispatch 자체는 영향받지 않는다 — 프린터는
+    success_load1 때 비로소 고른다."""
     await _occupy(2)
     await _fill_all_printers()
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
 
     async with AsyncSessionLocal() as session:
         order = await WorkRequestService.create(session, shape=None)
-        assert order.status == OrderStatus.WAITING
+        assert order.status == OrderStatus.DISPATCHING
+        assert order.printer_slot is None
 
     async with AsyncSessionLocal() as session:
-        tasks = (await session.execute(select(RobotTask))).scalars().all()
-        assert tasks == []
-
         board = await session.get(BoardStock, 2)
-        assert board.status == BoardStockStatus.OCCUPIED  # 그대로, RESERVED로 넘어가지 않음
+        assert board.status == BoardStockStatus.RESERVED
+
+        task = (await session.execute(select(RobotTask))).scalars().one()
+        assert task.type == TaskType.LOAD
+        assert task.status == TaskStatus.DISPATCHED
+        assert task.start_pos_id == 2
+        assert task.sd_pos_id is None
+        assert task.printer_slot is None
 
 
-async def test_successful_dispatch_sets_dispatching_and_reserves_slots(monkeypatch):
+async def test_successful_dispatch_reserves_board_only(monkeypatch):
     await _occupy(2)
     monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
 
     async with AsyncSessionLocal() as session:
         order = await WorkRequestService.create(session, shape=None)
         assert order.status == OrderStatus.DISPATCHING
-        assert order.printer_slot == 1  # 가장 작은 번호의 빈 프린터
+        assert order.printer_slot is None
 
     async with AsyncSessionLocal() as session:
         board = await session.get(BoardStock, 2)
         assert board.status == BoardStockStatus.RESERVED
 
-        printer = await session.get(Printer, 1)
-        assert printer.status == PrinterStatus.RESERVED
-        assert printer.current_order_id == order.id
-
-        task = (await session.execute(select(RobotTask))).scalars().one()
-        assert task.type == TaskType.LOAD
-        assert task.status == TaskStatus.DISPATCHED
-        assert task.start_pos_id == 2
-        assert task.sd_pos_id == 1
+        # 프린터는 아직 아무것도 건드리지 않는다.
+        for slot in (1, 2, 3):
+            printer = await session.get(Printer, slot)
+            assert printer.status == PrinterStatus.EMPTY
+            assert printer.current_order_id is None
 
 
-async def test_sqs_produce_failure_rolls_back_reservation(monkeypatch):
+async def test_sqs_produce_failure_rolls_back_board_reservation(monkeypatch):
     await _occupy(2)
     monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(False))
 
@@ -100,26 +104,24 @@ async def test_sqs_produce_failure_rolls_back_reservation(monkeypatch):
         board = await session.get(BoardStock, 2)
         assert board.status == BoardStockStatus.OCCUPIED  # RESERVED에서 원복
 
-        printer = await session.get(Printer, 1)
-        assert printer.status == PrinterStatus.EMPTY
-        assert printer.current_order_id is None
-
         tasks = (await session.execute(select(RobotTask))).scalars().all()
         assert tasks == []
 
 
-async def test_pick_complete_moves_order_to_loading_and_frees_slot(monkeypatch):
+async def test_load_success_frees_board_and_dispatches_lowest_empty_printer(monkeypatch):
     await _occupy(2)
     monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
+    monkeypatch.setattr(SqsProducerService, "produce_place_command", _fake_produce(True))
 
     async with AsyncSessionLocal() as session:
         order = await WorkRequestService.create(session, shape=None)
 
-    await WorkRequestService.handle_pick_complete(order.id)
+    await WorkRequestService.handle_load_success(order.id)
 
     async with AsyncSessionLocal() as session:
         refreshed = await session.get(Order, order.id)
         assert refreshed.status == OrderStatus.LOADING
+        assert refreshed.printer_slot == 1  # 가장 작은 번호의 빈 프린터
 
         board = await session.get(BoardStock, 2)
         assert board.status == BoardStockStatus.EMPTY
@@ -127,10 +129,72 @@ async def test_pick_complete_moves_order_to_loading_and_frees_slot(monkeypatch):
         task = (await session.execute(select(RobotTask))).scalars().one()
         assert task.status == TaskStatus.RUNNING
         assert task.started_at is not None
+        assert task.printer_slot == 1
+        assert task.sd_pos_id == 1
+
+        printer = await session.get(Printer, 1)
+        assert printer.status == PrinterStatus.RESERVED
+        assert printer.current_order_id == order.id
 
 
-async def test_pick_complete_ignores_unknown_work_id():
-    await WorkRequestService.handle_pick_complete(999999)  # 예외 없이 조용히 무시
+async def test_load_success_with_no_empty_printer_still_frees_board(monkeypatch):
+    """베드는 집었지만(물리적 사실) 둘 곳(빈 프린터)이 없는 경우 — board_stock/주문
+    상태 전이는 그대로 적용되고, 프린터 배정/배치 명령만 보류된다."""
+    await _occupy(2)
+    await _fill_all_printers()
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
+
+    async with AsyncSessionLocal() as session:
+        order = await WorkRequestService.create(session, shape=None)
+
+    await WorkRequestService.handle_load_success(order.id)
+
+    async with AsyncSessionLocal() as session:
+        refreshed = await session.get(Order, order.id)
+        assert refreshed.status == OrderStatus.LOADING
+        assert refreshed.printer_slot is None
+
+        board = await session.get(BoardStock, 2)
+        assert board.status == BoardStockStatus.EMPTY
+
+
+async def test_load_success_ignores_unknown_work_id():
+    await WorkRequestService.handle_load_success(999999)  # 예외 없이 조용히 무시
+
+
+async def test_load_pick_failed_broadcasts_alert_without_changing_state(monkeypatch):
+    await _occupy(2)
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
+
+    async with AsyncSessionLocal() as session:
+        order = await WorkRequestService.create(session, shape=None)
+
+    await WorkRequestService.handle_load_pick_failed(order.id)
+
+    async with AsyncSessionLocal() as session:
+        refreshed = await session.get(Order, order.id)
+        assert refreshed.status == OrderStatus.DISPATCHING  # 그대로
+
+        board = await session.get(BoardStock, 2)
+        assert board.status == BoardStockStatus.RESERVED  # 그대로
+
+
+async def test_retry_load_resends_same_start_pos_id(monkeypatch):
+    await _occupy(2)
+    sent: list[dict] = []
+
+    async def _fake_produce_load(*, work_id, start_pos_id):
+        sent.append({"work_id": work_id, "start_pos_id": start_pos_id})
+        return True
+
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce_load)
+
+    async with AsyncSessionLocal() as session:
+        order = await WorkRequestService.create(session, shape=None)
+
+    await WorkRequestService.retry_load(order.id)
+
+    assert sent[-1] == {"work_id": order.id, "start_pos_id": 2}
 
 
 async def test_refill_complete_fills_only_empty_slots():

@@ -1,17 +1,15 @@
 import { useState } from "react";
 import { DashboardTemplate } from "../components/templates/DashboardTemplate";
-import { TopBar } from "../components/organisms/TopBar";
-import { OrderQueuePanel } from "../components/organisms/OrderQueuePanel";
 import { OrderForm } from "../components/organisms/OrderForm";
-import { DebugPanel } from "../components/organisms/DebugPanel";
-import { EventLogPanel } from "../components/organisms/EventLogPanel";
+import { BoardStockPanel } from "../components/organisms/BoardStockPanel";
 import { BoardStockRefillModal } from "../components/organisms/BoardStockRefillModal";
+import { LoadPickFailedModal } from "../components/organisms/LoadPickFailedModal";
 import { useLiveState } from "../hooks/useLiveState";
 import { api, WorkRequestError } from "../lib/api";
 import type { Shape } from "../types";
 
 export function DashboardPage() {
-  const { snapshot, connected, alert, log, setAlert, updateSimulator } = useLiveState();
+  const { alert, setAlert, loadFailedAlert, setLoadFailedAlert, boardStock } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
 
   const handleOrder = async (customerName: string, shape: Shape) => {
@@ -32,29 +30,21 @@ export function DashboardPage() {
     setAlert(null);
   };
 
-  if (!snapshot) {
-    return <div className="app-loading">서버에 연결하는 중...</div>;
-  }
-
-  const { robot, waiting_orders, active_orders, pickup_orders, simulator } = snapshot;
+  const handleRetryLoad = async (workId: number) => {
+    await api.retryLoad(workId);
+    setLoadFailedAlert(null);
+  };
 
   return (
     <DashboardTemplate
-      topBar={
-        <TopBar
-          wsConnected={connected}
-          robot={robot}
-          simulator={simulator}
-          onPatchSimulator={(patch) => api.patchSimulator(patch).then(updateSimulator)}
-        />
-      }
-      waitingQueue={<OrderQueuePanel title="대기 큐" orders={waiting_orders} />}
-      activeQueue={<OrderQueuePanel title="작업중" orders={active_orders} showStatus />}
-      pickupQueue={<OrderQueuePanel title="수령 대기" orders={pickup_orders} />}
       orderForm={<OrderForm onOrder={handleOrder} error={orderError} />}
-      debugPanel={<DebugPanel onFault={(kind) => api.setDebugFault(kind)} />}
-      eventLogPanel={<EventLogPanel log={log} />}
-      modal={<BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />}
+      boardStock={<BoardStockPanel slots={boardStock} />}
+      modal={
+        <>
+          <BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />
+          <LoadPickFailedModal alert={loadFailedAlert} onConfirm={handleRetryLoad} />
+        </>
+      }
     />
   );
 }
