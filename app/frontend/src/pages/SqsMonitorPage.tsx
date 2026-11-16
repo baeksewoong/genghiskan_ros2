@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Pill } from "../components/atoms/Pill";
-import { useLiveState } from "../hooks/useLiveState";
+import { summarize, useLiveState, type LogEntry } from "../hooks/useLiveState";
 import { api } from "../lib/api";
 import type { SqsQueueStatus, SqsStatus } from "../types";
 
@@ -40,6 +40,8 @@ export function SqsMonitorPage() {
   const { sqsLog } = useLiveState();
   const [status, setStatus] = useState<SqsStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [history, setHistory] = useState<LogEntry[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +66,28 @@ export function SqsMonitorPage() {
     };
   }, []);
 
+  useEffect(() => {
+    // 이 페이지를 열기 전에 오간 메시지도 보이도록, 서버에 저장된 히스토리를 한 번
+    // 불러온다. 그 이후부터는 useLiveState의 실시간 sqsLog가 이어서 쌓인다.
+    api
+      .getSqsHistory()
+      .then((envelopes) => {
+        setHistory(
+          envelopes.map((e) => ({
+            id: e.event_id,
+            ts: e.ts,
+            type: e.type,
+            summary: summarize(e.type, e.data),
+            data: e.data,
+          }))
+        );
+      })
+      .catch((e) => setHistoryError(String(e)));
+  }, []);
+
+  const liveIds = new Set(sqsLog.map((entry) => entry.id));
+  const combinedLog = [...sqsLog, ...history.filter((entry) => !liveIds.has(entry.id))];
+
   return (
     <div className="app">
       <header className="topbar">
@@ -76,14 +100,15 @@ export function SqsMonitorPage() {
       </main>
 
       {statusError && <p className="sqs-status-error">큐 상태 조회 실패: {statusError}</p>}
+      {historyError && <p className="sqs-status-error">히스토리 조회 실패: {historyError}</p>}
 
       <section className="panel sqs-log">
-        <h2>메시지 로그 ({sqsLog.length})</h2>
-        {sqsLog.length === 0 ? (
+        <h2>메시지 로그 ({combinedLog.length})</h2>
+        {combinedLog.length === 0 ? (
           <p>아직 수신/발행된 메시지가 없습니다.</p>
         ) : (
           <ul>
-            {sqsLog.map((entry) => (
+            {combinedLog.map((entry) => (
               <li key={entry.id}>
                 <div>
                   <span className="log-ts">{entry.ts}</span>

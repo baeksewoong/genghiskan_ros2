@@ -9,6 +9,8 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.repositories.event_log_repository import EventLogRepository
 
 _ATTRIBUTE_NAMES = [
     "ApproximateNumberOfMessages",
@@ -51,3 +53,11 @@ class SqsMonitorService:
             _queue_status("robot-events", settings.event_queue_url),
         )
         return {"command_queue": command_status, "event_queue": event_status}
+
+    @staticmethod
+    async def history(limit: int = 200) -> list[dict]:
+        """event_logs에 이미 기록돼있는 sqs.* 이벤트를 최신순으로 돌려준다 — 모니터링
+        페이지를 새로 열었을 때도 그 전에 오간 메시지를 볼 수 있게 한다."""
+        async with AsyncSessionLocal() as session:
+            rows = await EventLogRepository.list_by_type_prefix(session, "sqs.", limit)
+        return [row.payload for row in rows]

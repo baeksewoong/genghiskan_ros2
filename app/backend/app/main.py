@@ -10,7 +10,6 @@ from app.core.bootstrap import ensure_seed_data
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.services.dispatcher_service import DispatcherService
-from app.services.simulator_service import SimulatorService
 from app.services.sqs_consumer_service import SqsConsumerService
 from app.services.timer_service import TimerService
 
@@ -24,7 +23,6 @@ async def lifespan(app: FastAPI):
     # future" 오류를 낸다).
     background_tasks = [
         asyncio.create_task(TimerService.sweep_loop()),
-        asyncio.create_task(SimulatorService.auto_order_loop()),
         # 작업요청(SQS) 경로 전용: event_queue_url 미설정이면 즉시 반환해 아무 일도 안 한다.
         asyncio.create_task(SqsConsumerService.robot_events_loop()),
     ]

@@ -9,11 +9,12 @@ const SHAPES = Object.keys(SHAPE_LABEL) as Shape[];
 interface OrderModalProps {
   open: boolean;
   error: string | null;
+  submitting: boolean;
   onClose: () => void;
   onSubmit: (customerName: string, shape: Shape) => void;
 }
 
-export function OrderModal({ open, error, onClose, onSubmit }: OrderModalProps) {
+export function OrderModal({ open, error, submitting, onClose, onSubmit }: OrderModalProps) {
   const [customerName, setCustomerName] = useState("");
   const [shape, setShape] = useState<Shape>(SHAPES[0]);
 
@@ -60,11 +61,11 @@ export function OrderModal({ open, error, onClose, onSubmit }: OrderModalProps) 
         {error && <p className="error">{error}</p>}
 
         <div className="modal-footer">
-          <Button className="btn-outline" onClick={onClose}>
+          <Button className="btn-outline" onClick={onClose} disabled={submitting}>
             취소
           </Button>
-          <Button className="btn-primary" onClick={handleSubmit}>
-            요청하기
+          <Button className="btn-primary" onClick={handleSubmit} disabled={submitting}>
+            {submitting ? "요청 중..." : "요청하기"}
           </Button>
         </div>
       </div>

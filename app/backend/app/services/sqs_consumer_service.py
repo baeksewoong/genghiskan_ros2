@@ -1,9 +1,11 @@
-"""robot-events(SQS) <- success_load1 / fail_load1 메시지 소비.
+"""robot-events(SQS) <- success_load1 / success_load2 / fail_load1 메시지 소비.
 PRD: assets/docs/prd-work-request-sqs.md 5장.
 
 - {"work_id":1,"type":"success_load1"}: 베드 집기 성공. board_stock을 비우고 주문을
   LOADING으로 바꾼 뒤, 그 시점에 비어있는 프린터를 찾아 배치 명령(sd_pos_id)을
   robot-commands에 보낸다.
+- {"work_id":1,"type":"success_load2"}: 프린터 배치 성공. 주문을 LOADING→PRINTING,
+  프린터를 RESERVED→PRINTING(타이머 시작)으로 바꾼다("작업중" 표시).
 - {"work_id":1,"type":"fail_load1"}: 베드 집기 실패. 로봇/주문 상태는 바꾸지 않고
   웹에 알럿만 띄워서 사람이 적재대를 확인하고 재시도("확인")하게 한다.
 
@@ -26,6 +28,7 @@ from app.services.work_request_service import WorkRequestService
 logger = logging.getLogger(__name__)
 
 _LOAD_SUCCESS_TYPE = "success_load1"
+_PLACE_SUCCESS_TYPE = "success_load2"
 _LOAD_PICK_FAILED_TYPE = "fail_load1"
 _ERROR_BACKOFF_SEC = 3.0
 
@@ -95,6 +98,14 @@ class SqsConsumerService:
                 # 재시도되게 둔다. 알 수 없는 work_id/중복 수신은 여기서 예외가 나지
                 # 않으므로(handle_load_success가 조용히 무시) 영향 없다.
                 logger.exception("success_load1 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("type") == _PLACE_SUCCESS_TYPE and "work_id" in body:
+            try:
+                await WorkRequestService.handle_place_success(int(body["work_id"]))
+            except (TypeError, ValueError):
+                logger.error("success_load2 work_id가 올바르지 않습니다: %s", body)
+            except Exception:
+                logger.exception("success_load2 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
                 return
         elif body.get("type") == _LOAD_PICK_FAILED_TYPE and "work_id" in body:
             try:

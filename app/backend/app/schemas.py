@@ -25,6 +25,8 @@ class OrderOut(BaseModel):
 
     id: int
     user_id: int
+    # 수령대/대기열 UI 표시용 — 주문자(User)의 이름.
+    customer_name: str | None = None
     shape: Shape
     print_duration_sec: int
     status: OrderStatus
@@ -45,6 +47,8 @@ class PrinterOut(BaseModel):
     slot: int
     status: PrinterStatus
     current_order_id: int | None
+    # 작업대 현황 UI 표시용 — current_order_id가 있을 때 그 주문의 손님 이름.
+    customer_name: str | None = None
     timer_ends_at: datetime | None
     updated_at: datetime
 
@@ -78,14 +82,10 @@ class RobotStatusOut(BaseModel):
 
 
 class SimulatorSettingsOut(BaseModel):
-    running: bool
-    interval_sec: int
     time_scale: float
 
 
 class SimulatorSettingsPatch(BaseModel):
-    running: bool | None = None
-    interval_sec: int | None = Field(default=None, gt=0)
     time_scale: float | None = Field(default=None, gt=0)
 
 

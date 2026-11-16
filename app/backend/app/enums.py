@@ -32,6 +32,11 @@ class OrderStatus(str, Enum):
 class OrderSource(str, Enum):
     AUTO = "AUTO"
     MANUAL = "MANUAL"
+    # 작업요청(SQS) 경로 전용 (WorkRequestService). 가상 로봇(/ws/bridge) 경로의
+    # DispatcherService가 이 주문을 주워가지 않도록 MANUAL과 구분한다 — 그렇지 않으면
+    # board_stock이 비어 WAITING으로 남은 작업요청 주문을, 가상 로봇 DispatcherService가
+    # (board 체크 없이) 빈 프린터만 보고 멋대로 집어가 가상 로봇으로 완료시켜 버린다.
+    WORK_REQUEST = "WORK_REQUEST"
 
 
 class PrinterStatus(str, Enum):

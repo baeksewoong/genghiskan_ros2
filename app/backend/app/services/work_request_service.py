@@ -11,7 +11,7 @@ LOAD는 두 단계다: dispatch 시점엔 베드(start_pos_id)만 확인해서 �
 
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,8 @@ from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas import OrderOut, PrinterOut
+from app.services.order_presenter import build_order_out
+from app.services.printer_presenter import build_printer_out
 from app.services.sqs_producer_service import SqsProducerService
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ class WorkRequestService:
                 raise SqsProduceError(order.id)
 
             await broadcast_to_web(
-                session2, "order.updated", OrderOut.model_validate(order_db).model_dump(mode="json")
+                session2, "order.updated", (await build_order_out(session2, order_db)).model_dump(mode="json")
             )
             await broadcast_to_web(
                 session2, "board_stock.updated", await WorkRequestService._board_stock_snapshot(session2)
@@ -154,7 +155,7 @@ class WorkRequestService:
             await session.flush()
 
             await broadcast_to_web(
-                session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json")
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
             )
             await broadcast_to_web(
                 session, "board_stock.updated", await WorkRequestService._board_stock_snapshot(session)
@@ -203,10 +204,54 @@ class WorkRequestService:
 
             if order is not None:
                 await broadcast_to_web(
-                    session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json")
+                    session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
                 )
             await broadcast_to_web(
-                session, "printer.updated", PrinterOut.model_validate(printer).model_dump(mode="json")
+                session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
+            )
+            await session.commit()
+
+    @staticmethod
+    async def handle_place_success(work_id: int) -> None:
+        """robot-events의 success_load2(프린터 배치 성공) 수신 처리: 주문을
+        LOADING→PRINTING으로, 배정된 프린터를 RESERVED→PRINTING(타이머 시작)으로,
+        LOAD 작업을 RUNNING→SUCCEEDED로 바꾼다. 그 뒤로는 기존 TimerService의
+        출력 타이머 스윕이 가상 로봇 경로와 동일하게 처리한다. 알 수 없는
+        work_id이거나 이미 처리된 경우(중복 수신)는 조용히 무시한다."""
+        async with AsyncSessionLocal() as session:
+            order = await OrderRepository.get_locked(session, work_id)
+            if order is None or order.status != OrderStatus.LOADING:
+                await session.rollback()
+                return
+
+            task = await RobotTaskRepository.get_active_load_for_order_locked(session, work_id)
+            if task is None or task.printer_slot is None:
+                await session.rollback()
+                return
+
+            printer = await PrinterRepository.get_locked(session, task.printer_slot)
+            if printer is None or printer.status != PrinterStatus.RESERVED:
+                await session.rollback()
+                return
+
+            now = datetime.utcnow()
+            task.status = TaskStatus.SUCCEEDED
+            task.finished_at = now
+
+            order.status = OrderStatus.PRINTING
+            order.started_at = now
+            order.updated_at = now
+
+            printer.status = PrinterStatus.PRINTING
+            printer.timer_ends_at = now + timedelta(seconds=order.print_duration_sec)
+            printer.updated_at = now
+            await session.flush()
+
+            await broadcast_to_web(
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+            )
+            await broadcast_to_web(
+                session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
             )
             await session.commit()
 
@@ -266,13 +311,13 @@ class WorkRequestService:
             shape=chosen_shape,
             print_duration_sec=SHAPE_PRINT_DURATION_SEC[chosen_shape],
             status=OrderStatus.WAITING,
-            source=OrderSource.MANUAL,
+            source=OrderSource.WORK_REQUEST,
             created_at=now,
             updated_at=now,
         )
         OrderRepository.add(session, order)
         await session.flush()
-        await broadcast_to_web(session, "order.created", OrderOut.model_validate(order).model_dump(mode="json"))
+        await broadcast_to_web(session, "order.created", (await build_order_out(session, order)).model_dump(mode="json"))
         await session.commit()
         return order
 

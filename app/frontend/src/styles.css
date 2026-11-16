@@ -170,7 +170,9 @@ body {
   min-width: 0;
 }
 
-.board-stock-list {
+.board-stock-list,
+.printer-list,
+.pickup-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -179,7 +181,9 @@ body {
   gap: 0.5rem;
 }
 
-.board-stock-list li {
+.board-stock-list li,
+.printer-list li,
+.pickup-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -188,8 +192,49 @@ body {
   border-radius: 6px;
 }
 
-.board-stock-slot {
+.pickup-info {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.pickup-customer-name {
   font-weight: 600;
+}
+
+.pickup-shape {
+  font-size: 0.85rem;
+  color: #9aa0ab;
+}
+
+.pickup-completed-at {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: #6fb3ff;
+}
+
+.board-stock-slot,
+.printer-slot {
+  font-weight: 600;
+}
+
+.printer-slot {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.printer-customer-name {
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: #9aa0ab;
+}
+
+.printer-timer {
+  font-weight: 400;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: #6fb3ff;
 }
 
 .sqs-counts {

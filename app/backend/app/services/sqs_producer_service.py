@@ -52,7 +52,19 @@ class SqsProducerService:
         """success_load1(베드 집기 성공) 수신 후, 그 시점에 비어있는 프린터를 목적지로
         하는 배치 명령을 robot-commands에 보낸다."""
         return await SqsProducerService._send(
-            work_id, {"work_id": work_id, "sd_pos_id": sd_pos_id}, dedup_prefix="place"
+            work_id,
+            {"work_id": work_id, "sd_pos_id": sd_pos_id, "type": "load2"},
+            dedup_prefix="place",
+        )
+
+    @staticmethod
+    async def produce_unload_command(work_id: int, sd_pos_id: int) -> bool:
+        """출력 타이머 완료(PRINT_DONE) 시, 완성품이 놓인 프린터 위치를 목적지로
+        하는 수령(UNLOAD) 명령을 robot-commands에 보낸다."""
+        return await SqsProducerService._send(
+            work_id,
+            {"work_id": work_id, "sd_pos_id": sd_pos_id, "type": "unload1"},
+            dedup_prefix="unload",
         )
 
     @staticmethod
