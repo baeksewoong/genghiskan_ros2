@@ -30,7 +30,11 @@ DR_init.__dsr__model = ROBOT_MODEL
 
 def build_commands(motions):
     """메뉴 이름 -> (설명, 실행 함수(인자 리스트)) 표."""
-    from sfarm_interfaces.action import Load, Unload
+    from sfarm_interfaces.action import Load, Load1, Unload
+
+    def load1(args):
+        s = int(args[0]) if len(args) > 0 else 3
+        return motions.run_load1(Load1.Goal(work_id=0, start_pos_id=s))
 
     def load(args):
         s = int(args[0]) if len(args) > 0 else 3
@@ -80,6 +84,7 @@ def build_commands(motions):
         'force': ('현재 Fz(N) 측정', force),
         'grip': ('그리퍼 닫기', lambda a: motions.grip_close()),
         'release': ('그리퍼 열기', lambda a: motions.grip_open()),
+        'load1': ('run_load1 [start_pos_id=3]  => True/False', load1),
         'load': ('run_load [start_pos_id=3] [pos_3d_id=1]  => True/False', load),
         'unload': ('run_unload [pos_3d_id=1] [receive_pos_id=1]', unload),
     }

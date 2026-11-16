@@ -1,13 +1,13 @@
 # Goal (input)
-int8 work_id
+int32 work_id
 int8 sd_pos_id
 ---
 # Result (output)
 bool success
 string message
-int8 work_id
+int32 work_id
 ---
 # Feedback
 builtin_interfaces/Time start_at
 builtin_interfaces/Time end_at
-int8 work_id
+int32 work_id
