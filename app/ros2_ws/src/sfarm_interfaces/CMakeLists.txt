@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/Load1.action"
   "action/Load2.action"
   "action/Unload.action"
+  "action/Unload1.action"
   "srv/Error.srv"
   DEPENDENCIES action_msgs builtin_interfaces
 )
