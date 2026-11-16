@@ -21,7 +21,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
-from sfarm_interfaces.action import Load, Unload
+from sfarm_interfaces.action import Load, Load2, Unload
 
 ROBOT_ID = 'dsr01'
 ROBOT_MODEL = 'm0609'
@@ -32,12 +32,13 @@ DR_init.__dsr__model = ROBOT_MODEL
 
 # ---------------------------------------------------------------- 액션 서버
 class RobotActionServer(Node):
-    """/sfarm/load, /sfarm/unload 액션을 받아 로봇 동작을 실행하는 노드."""
+    """/sfarm/load, /sfarm/load2, /sfarm/unload 액션을 받아 로봇 동작을 실행하는 노드."""
 
-    def __init__(self, run_load, run_unload) -> None:
+    def __init__(self, run_load, run_unload, run_load2=None) -> None:
         super().__init__('sfarm_robot_action_server')
         self.run_load = run_load
         self.run_unload = run_unload
+        self.run_load2 = run_load2
         self.cb_group = ReentrantCallbackGroup()
         # 로봇은 한 번에 하나의 동작만 수행
         self.busy_lock = threading.Lock()
@@ -49,6 +50,13 @@ class RobotActionServer(Node):
             cancel_callback=self.cancel_callback,
             callback_group=self.cb_group,
         )
+        self.load2_server = ActionServer(
+            self, Load2, '/sfarm/load2',
+            execute_callback=self.execute_load2,
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback,
+            callback_group=self.cb_group,
+        )
         self.unload_server = ActionServer(
             self, Unload, '/sfarm/unload',
             execute_callback=self.execute_unload,
@@ -56,7 +64,7 @@ class RobotActionServer(Node):
             cancel_callback=self.cancel_callback,
             callback_group=self.cb_group,
         )
-        self.get_logger().info('ready: /sfarm/load, /sfarm/unload')
+        self.get_logger().info('ready: /sfarm/load, /sfarm/load2, /sfarm/unload')
 
     def goal_callback(self, goal_request) -> GoalResponse:
         """로봇이 다른 동작 중이면 goal을 거절한다."""
@@ -77,6 +85,10 @@ class RobotActionServer(Node):
             goal_handle, Load, Load.Result.WORK_TYPE_LOAD, self.run_load, 'load'
         )
 
+    def execute_load2(self, goal_handle):
+        """Load2 콜백 (빼기 -> 작업대 sd_pos_id층)."""
+        return self._execute(goal_handle, Load2, None, self.run_load2, 'load2')
+
     def execute_unload(self, goal_handle):
         """Unload 콜백."""
         return self._execute(
@@ -87,7 +99,8 @@ class RobotActionServer(Node):
         goal = goal_handle.request
         result = action_type.Result()
         result.work_id = goal.work_id
-        result.work_type = work_type
+        if work_type is not None and hasattr(result, 'work_type'):
+            result.work_type = work_type
 
         feedback = action_type.Feedback()
         feedback.work_id = goal.work_id
@@ -105,7 +118,8 @@ class RobotActionServer(Node):
                 goal_handle.publish_feedback(feedback)
                 goal_handle.abort()
                 result.success = False
-                result.message = f'{name} failed: {exc}'
+                if hasattr(result, 'message'):
+                    result.message = f'{name} failed: {exc}'
                 return result
 
         feedback.end_at = self.get_clock().now().to_msg()
@@ -113,10 +127,12 @@ class RobotActionServer(Node):
         result.success = ok is not False
         if result.success:
             goal_handle.succeed()
-            result.message = f'{name} done'
+            if hasattr(result, 'message'):
+                result.message = f'{name} done'
         else:
             goal_handle.abort()
-            result.message = f'{name} failed: weight not detected (gripping failed)'
+            if hasattr(result, 'message'):
+                result.message = f'{name} failed: weight not detected (gripping failed)'
         self.get_logger().info(
             f'[{name}] done: work_id={goal.work_id} success={result.success}'
         )
@@ -133,14 +149,14 @@ def main(args=None) -> None:
     DR_init.__dsr__node = dsr_node
     try:
         # motions.py는 맨 위에서 DSR_ROBOT2를 import 하므로 DR_init 설정이 끝난 지금 import 한다.
-        from sfarm_robot.motions import run_load, run_unload
+        from sfarm_robot.motions import run_load, run_load2, run_unload
     except ImportError as e:
         dsr_node.get_logger().error(f'Error importing DSR_ROBOT2 / motions: {e}')
         dsr_node.destroy_node()
         rclpy.shutdown()
         return
 
-    node = RobotActionServer(run_load, run_unload)
+    node = RobotActionServer(run_load, run_unload, run_load2=run_load2)
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:
