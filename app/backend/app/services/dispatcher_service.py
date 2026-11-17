@@ -1,6 +1,7 @@
 """디스패처: 로봇이 IDLE일 때마다 UNLOAD > LOAD 우선순위로 작업을 하나 고르고
-로봇 쪽(/ws/bridge)으로 내려보낸다 (PRD 3장). 여러 리포지토리를 넘나드는
-유스케이스 orchestration이므로 서비스 계층에 둔다."""
+로봇 쪽(/ws/bridge)으로 내려보낸다 (PRD 3장). 여러 리포지토리/엔티티를 넘나드는
+유스케이스 orchestration이므로 서비스 계층에 둔다 — 상태 전이 규칙 자체는
+Order/Printer/RobotTask 엔티티 메서드로 옮겨져 있다."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web, send_to_bridge
 from app.core.runtime import runtime
-from app.enums import ACTIVE_TASK_STATUSES, OrderStatus, PrinterStatus, RobotState, TaskStatus, TaskType
+from app.enums import ACTIVE_TASK_STATUSES, RobotState, TaskType
 from app.models import Order, Printer, RobotTask
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
@@ -86,18 +87,10 @@ class DispatcherService:
         printer, order = found
 
         now = datetime.utcnow()
-        task = RobotTask(
-            order_id=order.id,
-            type=TaskType.UNLOAD,
-            printer_slot=printer.slot,
-            status=TaskStatus.DISPATCHED,
-            dispatched_at=now,
-        )
+        task = RobotTask.dispatch_unload(order_id=order.id, printer_slot=printer.slot, now=now)
         RobotTaskRepository.add(session, task)
-        order.status = OrderStatus.UNLOADING
-        order.updated_at = now
-        printer.status = PrinterStatus.UNLOADING
-        printer.updated_at = now
+        order.mark_unloading(now)
+        printer.start_unloading(now)
         await session.flush()
         return _ReservedTask(task=task, order=order, printer=printer)
 
@@ -113,20 +106,10 @@ class DispatcherService:
             return None
 
         now = datetime.utcnow()
-        task = RobotTask(
-            order_id=order.id,
-            type=TaskType.LOAD,
-            printer_slot=printer.slot,
-            status=TaskStatus.DISPATCHED,
-            dispatched_at=now,
-        )
+        task = RobotTask.dispatch_load(order_id=order.id, printer_slot=printer.slot, now=now)
         RobotTaskRepository.add(session, task)
-        order.status = OrderStatus.LOADING
-        order.printer_slot = printer.slot
-        order.updated_at = now
-        printer.status = PrinterStatus.RESERVED
-        printer.current_order_id = order.id
-        printer.updated_at = now
+        order.mark_loading(now, printer_slot=printer.slot)
+        printer.reserve(order.id, now)
         await session.flush()
         return _ReservedTask(task=task, order=order, printer=printer)
 
@@ -141,21 +124,14 @@ class DispatcherService:
             printer = await PrinterRepository.get(session, task.printer_slot)
             now = datetime.utcnow()
 
-            task.status = TaskStatus.CANCELED
-            task.finished_at = now
+            task.cancel(now)
 
             if task.type == TaskType.LOAD:
-                order.status = OrderStatus.WAITING
-                order.printer_slot = None
-                order.updated_at = now
-                printer.status = PrinterStatus.EMPTY
-                printer.current_order_id = None
-                printer.updated_at = now
+                order.revert_to_waiting(now)
+                printer.clear(now)
             else:
-                order.status = OrderStatus.PRINT_DONE
-                order.updated_at = now
-                printer.status = PrinterStatus.DONE
-                printer.updated_at = now
+                order.revert_to_print_done(now)
+                printer.revert_to_done(now)
 
             await broadcast_to_web(
                 session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")

@@ -76,6 +76,23 @@ export interface Envelope<T = unknown> {
   data: T;
 }
 
+// 티칭 팬던트(실물 로봇 조그 제어) 전용 (PRD: assets/docs/prd-teaching-pendant.md).
+// space=TASK면 Cartesian(X/Y/Z/Rx/Ry/Rz, ref_frame 필요), space=JOINT면 J1~J6(ref_frame 없음).
+export type JogSpace = "TASK" | "JOINT";
+export type JogRefFrame = "BASE" | "TOOL";
+export type CartesianAxis = "X" | "Y" | "Z" | "RX" | "RY" | "RZ";
+export type JointAxis = "J1" | "J2" | "J3" | "J4" | "J5" | "J6";
+export type JogAxis = CartesianAxis | JointAxis;
+export type JogDirection = 1 | -1;
+export type GripperAction = "OPEN" | "CLOSE";
+
+// 세션 활성화 응답(200)·jog_completed 이벤트의 current_pose에 쓰인다.
+export interface TeachingPendantPose {
+  space: JogSpace;
+  posx?: number[];
+  posj?: number[];
+}
+
 // SQS 모니터링 페이지 전용.
 export interface SqsQueueStatus {
   name: string;

@@ -4,13 +4,25 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import board_stock, debug, health, orders, simulator, sqs, state, stats, work_requests
+from app.api.routers import (
+    board_stock,
+    debug,
+    health,
+    orders,
+    simulator,
+    sqs,
+    state,
+    stats,
+    teaching_pendant,
+    work_requests,
+)
 from app.api.ws import bridge_ws, client_ws
 from app.core.bootstrap import ensure_seed_data
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.services.dispatcher_service import DispatcherService
 from app.services.sqs_consumer_service import SqsConsumerService
+from app.services.teaching_pendant_service import TeachingPendantService
 from app.services.timer_service import TimerService
 
 @asynccontextmanager
@@ -25,6 +37,9 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(TimerService.sweep_loop()),
         # 작업요청(SQS) 경로 전용: event_queue_url 미설정이면 즉시 반환해 아무 일도 안 한다.
         asyncio.create_task(SqsConsumerService.robot_events_loop()),
+        # 티칭 팬던트(조그/그리퍼) 세션 타임아웃(TP-11) 스윕. 조그 세션은 런타임
+        # 상태라 서버 재시작 시 항상 비활성으로 시작하므로 복구 로직이 필요 없다.
+        asyncio.create_task(TeachingPendantService.sweep_loop()),
     ]
 
     # 서버 재시작 복구: DB 상태 기준으로 즉시 한 번 평가한다 (로봇이 아직 연결 전이면 no-op).
@@ -56,6 +71,7 @@ app.include_router(health.router)
 app.include_router(work_requests.router)
 app.include_router(board_stock.router)
 app.include_router(sqs.router)
+app.include_router(teaching_pendant.router)
 
 app.include_router(client_ws.router)
 app.include_router(bridge_ws.router)

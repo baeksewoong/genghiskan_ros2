@@ -3,7 +3,6 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import broadcast_to_web
-from app.enums import BoardStockStatus
 from app.models import BoardStock
 from app.repositories.board_stock_repository import BoardStockRepository
 
@@ -21,9 +20,7 @@ class BoardStockService:
         rows = await BoardStockRepository.list_all_locked(session)
         now = datetime.utcnow()
         for row in rows:
-            if row.status == BoardStockStatus.EMPTY:
-                row.status = BoardStockStatus.OCCUPIED
-                row.updated_at = now
+            row.refill(now)
 
         await broadcast_to_web(
             session,

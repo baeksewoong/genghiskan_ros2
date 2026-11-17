@@ -6,7 +6,7 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web
 from app.core.runtime import runtime
-from app.enums import OrderStatus, PrinterStatus, RobotState, TaskStatus
+from app.enums import RobotState
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
@@ -34,11 +34,8 @@ class TimerService:
                 order = await OrderRepository.get(session, printer.current_order_id)
                 if order is None:
                     continue
-                order.status = OrderStatus.PRINT_DONE
-                order.print_completed_at = now
-                order.updated_at = now
-                printer.status = PrinterStatus.DONE
-                printer.updated_at = now
+                order.mark_print_done(now)
+                printer.mark_done(now)
 
                 # 작업요청(SQS) 경로로 디스패치된 주문(LOAD 작업에 start_pos_id가 있음)만
                 # robot-commands에 unload1을 보낸다 — 가상 로봇(/ws/bridge) 경로는 그
@@ -65,9 +62,7 @@ class TimerService:
         async with AsyncSessionLocal() as session:
             tasks = await RobotTaskRepository.get_timed_out(session, deadline)
             for task in tasks:
-                task.status = TaskStatus.FAILED
-                task.error_code = "TIMEOUT"
-                task.finished_at = now
+                task.mark_failed(now, "TIMEOUT")
                 await broadcast_to_web(
                     session, "robot.state", {"state": RobotState.ERROR.value, "current_task_id": task.id}
                 )

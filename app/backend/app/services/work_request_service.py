@@ -17,17 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web
-from app.enums import (
-    SHAPE_PRINT_DURATION_SEC,
-    AlertReason,
-    BoardStockStatus,
-    OrderSource,
-    OrderStatus,
-    PrinterStatus,
-    Shape,
-    TaskStatus,
-    TaskType,
-)
+from app.enums import AlertReason, OrderSource, OrderStatus, PrinterStatus, Shape
 from app.models import Order, RobotTask
 from app.repositories.board_stock_repository import BoardStockRepository
 from app.repositories.order_repository import OrderRepository
@@ -37,6 +27,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.order_presenter import build_order_out
 from app.services.printer_presenter import build_printer_out
 from app.services.sqs_producer_service import SqsProducerService
+from app.services.teaching_pendant_service import TeachingPendantService
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +70,17 @@ class WorkRequestService:
     ) -> Order:
         order = await WorkRequestService._insert_order(session, shape, customer_name)
 
+        # 티칭 팬던트(실물 로봇 조그) 세션이 활성 중이면 로봇이 조그/그리퍼 명령
+        # 전용이어야 하므로 LOAD를 보내지 않는다 (PRD: prd-teaching-pendant.md 3장 B).
+        # 베드가 없을 때(BoardEmptyError)와 달리 이건 에러가 아니다 — 주문은 그대로
+        # WAITING으로 남기고 201(대기 등록) 응답을 돌려준다. 조그 세션 체크를 베드
+        # 확인보다 먼저 두어, 세션 중에는 베드 예약조차 건드리지 않는다.
+        if TeachingPendantService.is_session_active():
+            logger.info(
+                "조그 세션이 활성 중이라 작업요청 LOAD를 보류합니다 (order_id=%s, WAITING 유지)", order.id
+            )
+            return order
+
         async with AsyncSessionLocal() as session2:
             board = await BoardStockRepository.top_occupied_locked(session2)
             if board is None:
@@ -89,23 +91,13 @@ class WorkRequestService:
                 raise BoardEmptyError(order.id)
 
             now = datetime.utcnow()
-            board.status = BoardStockStatus.RESERVED
-            board.updated_at = now
+            board.reserve(now)
 
-            task = RobotTask(
-                order_id=order.id,
-                type=TaskType.LOAD,
-                printer_slot=None,
-                status=TaskStatus.DISPATCHED,
-                start_pos_id=board.slot,
-                sd_pos_id=None,
-                dispatched_at=now,
-            )
+            task = RobotTask.dispatch_load_request(order_id=order.id, start_pos_id=board.slot, now=now)
             RobotTaskRepository.add(session2, task)
 
             order_db = await OrderRepository.get_locked(session2, order.id)
-            order_db.status = OrderStatus.DISPATCHING
-            order_db.updated_at = now
+            order_db.mark_dispatching(now)
             await session2.flush()
 
             # TODO: 실제 적재대 슬롯(board.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
@@ -145,14 +137,11 @@ class WorkRequestService:
 
             now = datetime.utcnow()
             board = await BoardStockRepository.get_locked(session, task.start_pos_id)
-            if board is not None and board.status == BoardStockStatus.RESERVED:
-                board.status = BoardStockStatus.EMPTY
-                board.updated_at = now
+            if board is not None:
+                board.release(now)
 
-            order.status = OrderStatus.LOADING
-            order.updated_at = now
-            task.status = TaskStatus.RUNNING
-            task.started_at = task.started_at or now
+            order.mark_loading(now)
+            task.mark_running(now)
             await session.flush()
 
             await broadcast_to_web(
@@ -181,18 +170,14 @@ class WorkRequestService:
                 return
 
             now = datetime.utcnow()
-            printer.status = PrinterStatus.RESERVED
-            printer.current_order_id = work_id
-            printer.updated_at = now
+            printer.reserve(work_id, now)
 
             order = await OrderRepository.get_locked(session, work_id)
             task = await RobotTaskRepository.get_active_load_for_order_locked(session, work_id)
             if order is not None:
-                order.printer_slot = printer.slot
-                order.updated_at = now
+                order.assign_printer(printer.slot, now)
             if task is not None:
-                task.printer_slot = printer.slot
-                task.sd_pos_id = printer.slot
+                task.assign_printer(printer.slot)
             await session.flush()
 
             # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
@@ -237,16 +222,9 @@ class WorkRequestService:
                 return
 
             now = datetime.utcnow()
-            task.status = TaskStatus.SUCCEEDED
-            task.finished_at = now
-
-            order.status = OrderStatus.PRINTING
-            order.started_at = now
-            order.updated_at = now
-
-            printer.status = PrinterStatus.PRINTING
-            printer.timer_ends_at = now + timedelta(seconds=order.print_duration_sec)
-            printer.updated_at = now
+            task.mark_succeeded(now)
+            order.mark_printing(now)
+            printer.start_printing(now, now + timedelta(seconds=order.print_duration_sec))
             await session.flush()
 
             await broadcast_to_web(
@@ -308,15 +286,7 @@ class WorkRequestService:
         name = customer_name or f"손님-{random.randint(0, 9999):04d}"
         user = await UserRepository.add(session, name=name, created_at=now)
 
-        order = Order(
-            user_id=user.id,
-            shape=chosen_shape,
-            print_duration_sec=SHAPE_PRINT_DURATION_SEC[chosen_shape],
-            status=OrderStatus.WAITING,
-            source=OrderSource.WORK_REQUEST,
-            created_at=now,
-            updated_at=now,
-        )
+        order = Order.create_new(user_id=user.id, shape=chosen_shape, source=OrderSource.WORK_REQUEST, now=now)
         OrderRepository.add(session, order)
         await session.flush()
         await broadcast_to_web(session, "order.created", (await build_order_out(session, order)).model_dump(mode="json"))

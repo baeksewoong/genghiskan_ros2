@@ -1,7 +1,10 @@
 """서버 ↔ 로봇 쪽 프로세스(/ws/bridge) 메시지의 업무 로직 (PRD 7.4, 9.4, 9.5).
 
 전송 계층(app.api.ws.bridge_ws)은 소켓 수명주기(인증·수신 루프·하트비트)만
-담당하고, 각 메시지 타입에 대한 실제 처리는 이 서비스에 위임한다."""
+담당하고, 각 메시지 타입에 대한 실제 처리는 이 서비스에 위임한다. 상태 전이
+규칙 자체(어떤 상태에서 어떤 상태로 바뀌는지)는 Order/Printer/RobotTask
+엔티티 메서드에 있다 — 이 서비스는 "어떤 메시지가 왔을 때 어떤 전이를 호출할지"
+오케스트레이션만 담당한다."""
 
 from datetime import datetime, timedelta
 
@@ -10,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web
 from app.core.runtime import runtime
-from app.enums import ACTIVE_TASK_STATUSES, OrderStatus, PrinterStatus, RobotState, TaskStatus, TaskType
-from app.models import RobotTask
+from app.enums import ACTIVE_TASK_STATUSES, RobotState, TaskStatus, TaskType
+from app.models import Order, Printer, RobotTask
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
@@ -60,8 +63,7 @@ class BridgeProtocolService:
             task = await RobotTaskRepository.get(session, task_id)
             if task is None or task.status != TaskStatus.DISPATCHED:
                 return
-            task.status = TaskStatus.RUNNING
-            task.started_at = datetime.utcnow()
+            task.mark_running(datetime.utcnow())
             await session.commit()
         runtime.current_task_id = task_id
 
@@ -85,21 +87,14 @@ class BridgeProtocolService:
         printer = await PrinterRepository.get(session, task.printer_slot)
         now = datetime.utcnow()
 
-        task.status = TaskStatus.CANCELED
-        task.error_code = error_code
-        task.finished_at = now
+        task.cancel(now, error_code=error_code)
 
         if task.type == TaskType.LOAD:
-            order.status = OrderStatus.WAITING
-            order.printer_slot = None
-            printer.status = PrinterStatus.EMPTY
-            printer.current_order_id = None
+            order.revert_to_waiting(now)
+            printer.clear(now)
         else:
-            order.status = OrderStatus.PRINT_DONE
-            printer.status = PrinterStatus.DONE
-
-        order.updated_at = now
-        printer.updated_at = now
+            order.revert_to_print_done(now)
+            printer.revert_to_done(now)
 
         await broadcast_to_web(
             session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
@@ -115,7 +110,7 @@ class BridgeProtocolService:
             task = await RobotTaskRepository.get(session, task_id)
             if task is None:
                 return
-            task.last_phase = data.get("phase")
+            task.record_feedback(data.get("phase"))
             await broadcast_to_web(session, "robot.feedback", data)
             await session.commit()
 
@@ -133,26 +128,22 @@ class BridgeProtocolService:
             order = await OrderRepository.get(session, task.order_id)
             printer = await PrinterRepository.get(session, task.printer_slot)
             now = datetime.utcnow()
-            task.finished_at = now
 
             if success:
-                task.status = TaskStatus.SUCCEEDED
+                task.mark_succeeded(now)
                 if task.type == TaskType.LOAD:
-                    await BridgeProtocolService._apply_load_success(order, printer, now)
+                    BridgeProtocolService._apply_load_success(order, printer, now)
                 else:
-                    await BridgeProtocolService._apply_unload_success(order, printer, now)
-                order.updated_at = now
-                printer.updated_at = now
+                    BridgeProtocolService._apply_unload_success(order, printer, now)
             else:
-                task.status = TaskStatus.FAILED
-                task.error_code = error_code
+                task.mark_failed(now, error_code)
                 if task.type == TaskType.LOAD and error_code == "NO_BOARD":
-                    await BridgeProtocolService._apply_no_board(order, printer, now)
+                    BridgeProtocolService._apply_no_board(order, printer, now)
                 else:
                     # GRIP_FAIL/MOTION_FAIL 등: 주문·슬롯은 현재 단계에 유지하고 로봇 ERROR로
                     # 넘겨 운영자 확인을 기다린다 (robot.state 메시지가 뒤이어 ERROR를 알린다).
-                    order.updated_at = now
-                    printer.updated_at = now
+                    order.touch(now)
+                    printer.touch(now)
 
             await broadcast_to_web(
                 session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
@@ -166,28 +157,22 @@ class BridgeProtocolService:
         await DispatcherService.run_cycle()
 
     @staticmethod
-    async def _apply_load_success(order, printer, now: datetime) -> None:
-        order.status = OrderStatus.PRINTING
-        order.started_at = now
-        printer.status = PrinterStatus.PRINTING
-        printer.timer_ends_at = now + timedelta(seconds=order.print_duration_sec * runtime.simulator_time_scale)
+    def _apply_load_success(order: Order, printer: Printer, now: datetime) -> None:
+        order.mark_printing(now)
+        printer.start_printing(
+            now, now + timedelta(seconds=order.print_duration_sec * runtime.simulator_time_scale)
+        )
 
     @staticmethod
-    async def _apply_unload_success(order, printer, now: datetime) -> None:
-        order.status = OrderStatus.READY_FOR_PICKUP
-        order.ready_at = now
-        printer.status = PrinterStatus.EMPTY
-        printer.current_order_id = None
+    def _apply_unload_success(order: Order, printer: Printer, now: datetime) -> None:
+        order.mark_ready_for_pickup(now)
+        printer.clear(now)
 
     @staticmethod
-    async def _apply_no_board(order, printer, now: datetime) -> None:
+    def _apply_no_board(order: Order, printer: Printer, now: datetime) -> None:
         """실물과 DB가 어긋났다는 뜻이므로 실물(보드 없음) 기준으로 맞춘다 (요구사항 12)."""
-        order.status = OrderStatus.WAITING
-        order.printer_slot = None
-        printer.status = PrinterStatus.EMPTY
-        printer.current_order_id = None
-        order.updated_at = now
-        printer.updated_at = now
+        order.revert_to_waiting(now)
+        printer.clear(now)
 
     @staticmethod
     async def handle_robot_state(data: dict) -> None:

@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { BoardStockSlot, Envelope, Order, SimulatorSettings, StateSnapshot } from "../types";
+import type {
+  BoardStockSlot,
+  Envelope,
+  GripperAction,
+  Order,
+  SimulatorSettings,
+  StateSnapshot,
+  TeachingPendantPose,
+} from "../types";
 import type { TaskType } from "../lib/robotArm";
 
 export interface LogEntry {
@@ -28,6 +36,41 @@ export interface FeedbackEvent {
   phase: string;
   progress: number;
 }
+
+// 티칭 팬던트(실물 로봇 조그 제어) 전용 (PRD: assets/docs/prd-teaching-pendant.md).
+// 세션 상태는 DB가 아니라 서버 런타임 상태이고(5장), 프론트도 ws 이벤트로만 갱신한다
+// (새로고침 시 항상 비활성으로 시작, 9장).
+// lib/api.ts의 TeachingPendantError(throw되는 Error 서브클래스)와 이름이 겹치지 않도록
+// 상태로 들고 있는 에러 정보는 별도 타입으로 둔다.
+export interface TeachingPendantErrorInfo {
+  code?: string;
+  message: string;
+}
+
+export interface TeachingPendantState {
+  enabled: boolean;
+  owner: string | null;
+  currentPose: TeachingPendantPose | null;
+  // 8.2 스텝 상호 배제: 조그/그리퍼 중 하나라도 pending이면 둘 다 새 요청을 보내지 않는다.
+  jogPending: boolean;
+  pendingJogId: string | null;
+  gripperPending: boolean;
+  pendingGripperCmdId: string | null;
+  gripperState: GripperAction | null;
+  lastError: TeachingPendantErrorInfo | null;
+}
+
+const INITIAL_TEACHING_PENDANT_STATE: TeachingPendantState = {
+  enabled: false,
+  owner: null,
+  currentPose: null,
+  jogPending: false,
+  pendingJogId: null,
+  gripperPending: false,
+  pendingGripperCmdId: null,
+  gripperState: null,
+  lastError: null,
+};
 
 function upsertOrder(snapshot: StateSnapshot, order: Order): StateSnapshot {
   const withoutOrder = (list: Order[]) => list.filter((o) => o.id !== order.id);
@@ -81,6 +124,16 @@ export function summarize(type: string, data: Record<string, unknown>): string {
       return `SQS 메시지 파싱 실패`;
     case "alert.load_pick_failed":
       return `알럿: 베드 집기 실패 (work_id=${data.work_id})`;
+    case "teaching_pendant.session_changed":
+      return `티칭 팬던트 세션 ${data.enabled ? `활성화 (소유자: ${data.owner})` : "비활성화"}`;
+    case "teaching_pendant.jog_completed":
+      return `조그 완료 (jog_id=${data.jog_id})`;
+    case "teaching_pendant.jog_failed":
+      return `조그 실패 (jog_id=${data.jog_id}): ${data.error_code}`;
+    case "teaching_pendant.gripper_completed":
+      return `그리퍼 ${data.state} 완료 (gripper_cmd_id=${data.gripper_cmd_id})`;
+    case "teaching_pendant.gripper_failed":
+      return `그리퍼 명령 실패 (gripper_cmd_id=${data.gripper_cmd_id}): ${data.error_code}`;
     default:
       return type;
   }
@@ -98,6 +151,8 @@ export function useLiveState() {
   const [feedback, setFeedback] = useState<FeedbackEvent | null>(null);
   // 적재대(board_stock) 현황 — home의 적재대 현황 UI 전용.
   const [boardStock, setBoardStock] = useState<BoardStockSlot[] | null>(null);
+  // 티칭 팬던트 페이지 전용.
+  const [teachingPendant, setTeachingPendant] = useState<TeachingPendantState>(INITIAL_TEACHING_PENDANT_STATE);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -175,6 +230,55 @@ export function useLiveState() {
               return match ? { ...s, status: match.status } : s;
             });
           });
+        } else if (envelope.type === "teaching_pendant.session_changed") {
+          const data = envelope.data as { enabled: boolean; owner?: string | null };
+          setTeachingPendant({ ...INITIAL_TEACHING_PENDANT_STATE, enabled: data.enabled, owner: data.owner ?? null });
+        } else if (envelope.type === "teaching_pendant.jog_completed") {
+          const data = envelope.data as { jog_id: string; current_pose: TeachingPendantPose };
+          setTeachingPendant((prev) => {
+            if (data.jog_id !== prev.pendingJogId) return prev; // 알 수 없는 jog_id는 무시 (8장)
+            return { ...prev, currentPose: data.current_pose, jogPending: false, pendingJogId: null, lastError: null };
+          });
+        } else if (envelope.type === "teaching_pendant.jog_failed") {
+          const data = envelope.data as { jog_id: string; error_code: string };
+          setTeachingPendant((prev) => {
+            if (data.jog_id !== prev.pendingJogId) return prev;
+            return {
+              ...prev,
+              jogPending: false,
+              pendingJogId: null,
+              lastError: { code: data.error_code, message: `조그 실패: ${data.error_code}` },
+            };
+          });
+        } else if (envelope.type === "teaching_pendant.gripper_completed") {
+          const data = envelope.data as { gripper_cmd_id: string; state: GripperAction };
+          setTeachingPendant((prev) => {
+            if (data.gripper_cmd_id !== prev.pendingGripperCmdId) return prev;
+            return {
+              ...prev,
+              gripperState: data.state,
+              gripperPending: false,
+              pendingGripperCmdId: null,
+              lastError: null,
+            };
+          });
+        } else if (envelope.type === "teaching_pendant.gripper_failed") {
+          const data = envelope.data as { gripper_cmd_id: string; error_code: string };
+          setTeachingPendant((prev) => {
+            if (data.gripper_cmd_id !== prev.pendingGripperCmdId) return prev;
+            return {
+              ...prev,
+              gripperPending: false,
+              pendingGripperCmdId: null,
+              lastError: { code: data.error_code, message: `그리퍼 명령 실패: ${data.error_code}` },
+            };
+          });
+        } else if (envelope.type === "bridge.connection") {
+          // 8장: 조그 중 로봇 연결이 끊기면 세션을 자동 비활성화하고 버튼을 모두 막는다.
+          // (서버도 같은 처리를 하겠지만, 끊김을 더 빨리 반영하기 위해 클라이언트에서도 선제 처리.)
+          if (!(envelope.data as any).connected) {
+            setTeachingPendant((prev) => (prev.enabled ? { ...INITIAL_TEACHING_PENDANT_STATE } : prev));
+          }
         }
       };
     }
@@ -194,6 +298,63 @@ export function useLiveState() {
     setSnapshot((prev) => (prev ? { ...prev, simulator: { ...prev.simulator, ...patch } } : prev));
   }
 
+  // 아래 함수들은 티칭 팬던트 페이지 전용 — REST 요청을 보낸 "직후"(page가 호출) 또는
+  // 클라이언트 쪽 타임아웃(TP-11) 발생 시 세션 상태를 갱신한다. 실제 완료/실패는 여전히
+  // 위 ws.onmessage의 teaching_pendant.* 이벤트가 갱신한다.
+
+  /** POST /jog가 202로 받아들여진 직후 호출 — 다음 완료/실패 응답이 올 때까지
+   * 조그 패드를 막는다(8.2 스텝 상호 배제). */
+  function beginTeachingPendantJog(jogId: string) {
+    setTeachingPendant((prev) => ({ ...prev, jogPending: true, pendingJogId: jogId, lastError: null }));
+  }
+
+  function beginTeachingPendantGripper(cmdId: string) {
+    setTeachingPendant((prev) => ({ ...prev, gripperPending: true, pendingGripperCmdId: cmdId, lastError: null }));
+  }
+
+  /** TP-11 세션 타임아웃: 일정 시간 내 완료/실패 응답이 없으면 에러를 띄우고 운영자
+   * 확인을 요구한다. pending은 그대로 둬 로봇이 실제로 움직이고 있을 가능성에 대해
+   * 섣불리 "끝났다"고 가정하지 않는다 — acknowledgeTeachingPendantError()로만 풀린다. */
+  function timeoutTeachingPendantJog(jogId: string) {
+    setTeachingPendant((prev) => {
+      if (jogId !== prev.pendingJogId) return prev;
+      return {
+        ...prev,
+        lastError: { code: "TIMEOUT", message: "조그 응답 시간 초과 — 로봇 상태를 직접 확인한 뒤 확인을 눌러주세요." },
+      };
+    });
+  }
+
+  function timeoutTeachingPendantGripper(cmdId: string) {
+    setTeachingPendant((prev) => {
+      if (cmdId !== prev.pendingGripperCmdId) return prev;
+      return {
+        ...prev,
+        lastError: { code: "TIMEOUT", message: "그리퍼 응답 시간 초과 — 로봇 상태를 직접 확인한 뒤 확인을 눌러주세요." },
+      };
+    });
+  }
+
+  /** 세션 활성화 요청(동기 4xx) 등, ws 이벤트가 아니라 REST 응답 자체에서 바로 알게 되는
+   * 에러를 표시한다 (jog_id/gripper_cmd_id가 아직 없는 거부 — 8.2 "세션이 비활성 상태"
+   * 409 등). */
+  function reportTeachingPendantError(message: string, code?: string) {
+    setTeachingPendant((prev) => ({ ...prev, lastError: { code, message } }));
+  }
+
+  /** 타임아웃 에러를 운영자가 확인했을 때 — pending을 강제로 풀어 버튼을 다시 쓸 수
+   * 있게 한다. */
+  function acknowledgeTeachingPendantError() {
+    setTeachingPendant((prev) => ({
+      ...prev,
+      lastError: null,
+      jogPending: false,
+      pendingJogId: null,
+      gripperPending: false,
+      pendingGripperCmdId: null,
+    }));
+  }
+
   return {
     snapshot,
     connected,
@@ -206,5 +367,12 @@ export function useLiveState() {
     feedback,
     updateSimulator,
     boardStock,
+    teachingPendant,
+    beginTeachingPendantJog,
+    beginTeachingPendantGripper,
+    timeoutTeachingPendantJog,
+    timeoutTeachingPendantGripper,
+    reportTeachingPendantError,
+    acknowledgeTeachingPendantError,
   };
 }
