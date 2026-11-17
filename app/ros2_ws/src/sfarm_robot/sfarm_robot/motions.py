@@ -38,11 +38,8 @@ from DSR_ROBOT2 import (
     wait,
 )
 
-<<<<<<< HEAD
+
 from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
-=======
-from sfarm_interfaces.action import Load, Load2, Unload
->>>>>>> d8be671 (feat/모니터링 화면 개발)
 
 from . import poses
 
@@ -132,7 +129,6 @@ def read_fz() -> float:
     return total / FORCE_SAMPLES
 
 
-<<<<<<< HEAD
 def get_current_poses() -> tuple[list[float], list[float]]:
     """현재 로봇의 관절 좌표(posj)와 직교 좌표(posx)를 float[6] 리스트로 반환."""
     cur_j = get_current_posj()
@@ -152,8 +148,6 @@ def get_current_poses() -> tuple[list[float], list[float]]:
     return posj_vals, posx_vals
 
 
-=======
->>>>>>> d8be671 (feat/모니터링 화면 개발)
 def go_ready(layer: int) -> None:
     """layer층 준비 위치(1단계: 홈 자리에서 그리퍼를 옆으로 눕힌 자세)로 이동.
 
@@ -539,7 +533,6 @@ def retreat_sd(layer: int = 3, log=print) -> None:
 
 
 # ---------------------------------------------------------------- 액션 콜백에서 호출
-<<<<<<< HEAD
 def run_load1(goal: Load1.Goal, log=print) -> bool:
     """Load1: 홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인 -> 그 자리에서 멈춤.
 
@@ -552,8 +545,6 @@ def run_load1(goal: Load1.Goal, log=print) -> bool:
     return grip_and_check(poses.START_POS_PICK_X[layer], log=log)
 
 
-=======
->>>>>>> d8be671 (feat/모니터링 화면 개발)
 def run_load(goal: Load.Goal, log=print) -> bool:
     """Load: 홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인 -> 그 자리에서 멈춤.
 
