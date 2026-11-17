@@ -230,7 +230,9 @@ async def test_load_pick_failed_broadcasts_alert_without_changing_state(monkeypa
         assert board.status == BoardStockStatus.RESERVED  # 그대로
 
 
-async def test_retry_load_resends_same_start_pos_id(monkeypatch):
+async def test_retry_load_resends_hardcoded_start_pos_id(monkeypatch):
+    """load1 SQS 발행은 현재 실제 적재대 슬롯과 무관하게 3으로 하드코딩돼 있다
+    (테스트용 임시 조치) — 재시도도 동일하게 3으로 다시 보내야 한다."""
     await _occupy(2)
     sent: list[dict] = []
 
@@ -245,7 +247,7 @@ async def test_retry_load_resends_same_start_pos_id(monkeypatch):
 
     await WorkRequestService.retry_load(order.id)
 
-    assert sent[-1] == {"work_id": order.id, "start_pos_id": 2}
+    assert sent[-1] == {"work_id": order.id, "start_pos_id": 3}
 
 
 async def test_refill_complete_fills_only_empty_slots():

@@ -108,7 +108,8 @@ class WorkRequestService:
             order_db.updated_at = now
             await session2.flush()
 
-            produced = await SqsProducerService.produce_load_command(work_id=order.id, start_pos_id=board.slot)
+            # TODO: 실제 적재대 슬롯(board.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
+            produced = await SqsProducerService.produce_load_command(work_id=order.id, start_pos_id=3)
             if not produced:
                 await session2.rollback()
                 raise SqsProduceError(order.id)
@@ -194,7 +195,8 @@ class WorkRequestService:
                 task.sd_pos_id = printer.slot
             await session.flush()
 
-            produced = await SqsProducerService.produce_place_command(work_id=work_id, sd_pos_id=printer.slot)
+            # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
+            produced = await SqsProducerService.produce_place_command(work_id=work_id, sd_pos_id=3)
             if not produced:
                 await session.rollback()
                 logger.error(
@@ -290,10 +292,10 @@ class WorkRequestService:
                 await session.rollback()
                 raise LoadRetryNotFoundError(work_id)
 
-            start_pos_id = task.start_pos_id
             await session.rollback()
 
-        produced = await SqsProducerService.produce_load_command(work_id=work_id, start_pos_id=start_pos_id)
+        # TODO: 실제 start_pos_id가 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
+        produced = await SqsProducerService.produce_load_command(work_id=work_id, start_pos_id=3)
         if not produced:
             raise SqsProduceError(work_id)
 
