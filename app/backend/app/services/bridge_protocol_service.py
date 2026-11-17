@@ -3,7 +3,6 @@
 전송 계층(app.api.ws.bridge_ws)은 소켓 수명주기(인증·수신 루프·하트비트)만
 담당하고, 각 메시지 타입에 대한 실제 처리는 이 서비스에 위임한다."""
 
-import random
 from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +15,9 @@ from app.models import RobotTask
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
-from app.schemas import OrderOut, PrinterOut
 from app.services.dispatcher_service import DispatcherService
+from app.services.order_presenter import build_order_out
+from app.services.printer_presenter import build_printer_out
 
 
 class BridgeProtocolService:
@@ -101,8 +101,12 @@ class BridgeProtocolService:
         order.updated_at = now
         printer.updated_at = now
 
-        await broadcast_to_web(session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json"))
-        await broadcast_to_web(session, "printer.updated", PrinterOut.model_validate(printer).model_dump(mode="json"))
+        await broadcast_to_web(
+            session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+        )
+        await broadcast_to_web(
+            session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
+        )
 
     @staticmethod
     async def handle_task_feedback(data: dict) -> None:
@@ -150,9 +154,11 @@ class BridgeProtocolService:
                     order.updated_at = now
                     printer.updated_at = now
 
-            await broadcast_to_web(session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json"))
             await broadcast_to_web(
-                session, "printer.updated", PrinterOut.model_validate(printer).model_dump(mode="json")
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+            )
+            await broadcast_to_web(
+                session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
             )
             await session.commit()
 
@@ -170,7 +176,6 @@ class BridgeProtocolService:
     async def _apply_unload_success(order, printer, now: datetime) -> None:
         order.status = OrderStatus.READY_FOR_PICKUP
         order.ready_at = now
-        order.pickup_delay_sec = max(1, round(random.randint(1, 10) * runtime.simulator_time_scale))
         printer.status = PrinterStatus.EMPTY
         printer.current_order_id = None
 

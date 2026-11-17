@@ -16,9 +16,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     task_timeout_sec: int = 120
-    default_auto_order_interval_sec: int = 45
     default_time_scale: float = 1.0
-    default_auto_order_running: bool = True
 
     timer_sweep_interval_sec: float = 0.5
     bridge_heartbeat_timeout_sec: float = 10.0

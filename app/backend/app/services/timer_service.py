@@ -10,8 +10,10 @@ from app.enums import OrderStatus, PrinterStatus, RobotState, TaskStatus
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
-from app.schemas import OrderOut, PrinterOut
 from app.services.dispatcher_service import DispatcherService
+from app.services.order_presenter import build_order_out
+from app.services.printer_presenter import build_printer_out
+from app.services.sqs_producer_service import SqsProducerService
 
 logger = logging.getLogger(__name__)
 
@@ -37,30 +39,23 @@ class TimerService:
                 order.updated_at = now
                 printer.status = PrinterStatus.DONE
                 printer.updated_at = now
+
+                # 작업요청(SQS) 경로로 디스패치된 주문(LOAD 작업에 start_pos_id가 있음)만
+                # robot-commands에 unload1을 보낸다 — 가상 로봇(/ws/bridge) 경로는 그
+                # 자체 UNLOAD 디스패치(DispatcherService)를 그대로 쓴다.
+                load_task = await RobotTaskRepository.get_load_task_for_order(session, order.id)
+                if load_task is not None and load_task.start_pos_id is not None:
+                    await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=printer.slot)
+
                 await broadcast_to_web(
-                    session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json")
+                    session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
                 )
                 await broadcast_to_web(
-                    session, "printer.updated", PrinterOut.model_validate(printer).model_dump(mode="json")
+                    session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
                 )
                 changed = True
             await session.commit()
         return changed
-
-    @staticmethod
-    async def _sweep_pickup_timers() -> None:
-        now = datetime.utcnow()
-        async with AsyncSessionLocal() as session:
-            for order in await OrderRepository.get_pickup(session):
-                due_at = order.ready_at + timedelta(seconds=order.pickup_delay_sec)
-                if due_at <= now:
-                    order.status = OrderStatus.PICKED_UP
-                    order.picked_up_at = now
-                    order.updated_at = now
-                    await broadcast_to_web(
-                        session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json")
-                    )
-            await session.commit()
 
     @staticmethod
     async def _sweep_task_timeouts() -> None:
@@ -86,7 +81,6 @@ class TimerService:
             await asyncio.sleep(settings.timer_sweep_interval_sec)
             try:
                 print_changed = await TimerService._sweep_print_timers()
-                await TimerService._sweep_pickup_timers()
                 await TimerService._sweep_task_timeouts()
                 if print_changed:
                     await DispatcherService.run_cycle()

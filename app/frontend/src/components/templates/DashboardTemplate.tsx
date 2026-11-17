@@ -1,36 +1,21 @@
 import type { ReactNode } from "react";
 
 interface DashboardTemplateProps {
-  topBar: ReactNode;
-  waitingQueue: ReactNode;
-  activeQueue: ReactNode;
-  pickupQueue: ReactNode;
   orderForm: ReactNode;
-  debugPanel: ReactNode;
-  eventLogPanel: ReactNode;
+  boardStock: ReactNode;
+  printers: ReactNode;
+  pickup: ReactNode;
   modal?: ReactNode;
 }
 
-export function DashboardTemplate({
-  topBar,
-  waitingQueue,
-  activeQueue,
-  pickupQueue,
-  orderForm,
-  debugPanel,
-  eventLogPanel,
-  modal,
-}: DashboardTemplateProps) {
+export function DashboardTemplate({ orderForm, boardStock, printers, pickup, modal }: DashboardTemplateProps) {
   return (
     <div className="app">
-      {topBar}
       <main className="layout">
-        {waitingQueue}
-        {activeQueue}
-        {pickupQueue}
         {orderForm}
-        {debugPanel}
-        {eventLogPanel}
+        {boardStock}
+        {printers}
+        {pickup}
       </main>
       {modal}
     </div>

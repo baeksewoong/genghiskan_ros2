@@ -1,1 +1,0 @@
-/home/rokey/workspace/genghiskan_ros2/app/ros2_ws/src/build/sfarm_interfaces/ament_cmake_core/sfarm_interfacesConfig-version.cmake

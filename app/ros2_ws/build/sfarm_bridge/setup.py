@@ -1,1 +1,0 @@
-/home/rokey/workspace/genghiskan_ros2/app/ros2_ws/src/sfarm_bridge/setup.py

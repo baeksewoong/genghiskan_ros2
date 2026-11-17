@@ -1,1 +1,0 @@
-/home/rokey/workspace/genghiskan_ros2/app/ros2_ws/src/build/sfarm_interfaces/rosidl_generator_rs/sfarm_interfaces/rust/src/lib.rs

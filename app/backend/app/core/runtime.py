@@ -23,10 +23,7 @@ class RuntimeState:
 
     client_connections: set[WebSocket] = field(default_factory=set)
 
-    simulator_running: bool = settings.default_auto_order_running
-    simulator_interval_sec: int = settings.default_auto_order_interval_sec
     simulator_time_scale: float = settings.default_time_scale
-    simulator_wakeup: asyncio.Event = field(default_factory=asyncio.Event)
 
     dispatcher_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
