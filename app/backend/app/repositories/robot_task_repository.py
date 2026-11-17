@@ -31,6 +31,23 @@ class RobotTaskRepository:
         return (await session.execute(lock_for_update(stmt, session))).scalars().first()
 
     @staticmethod
+    async def get_active_real_robot_task_locked(session: AsyncSession) -> RobotTask | None:
+        """실물 로봇(작업요청/SQS) 경로 전용 — "현재 실물 로봇에 진행 중인 작업이
+        있는지"를 찾는다 (PRD: assets/docs/prd-teaching-pendant.md 3장 A/B). 티칭
+        팬던트(조그) 세션 활성화 요청과 작업요청 생성(WorkRequestService.create)
+        양쪽이 상호 배제 판단에 이 메서드를 쓴다.
+
+        get_active_locked()와 정반대로 start_pos_id가 채워진 행만 본다 — 그
+        메서드의 주석대로 작업요청 경로 작업은 start_pos_id가 항상 채워져 있어
+        가상 로봇 전용 조회에서는 제외되지만, 여기서는 그 작업만 찾아야 한다.
+        기존 get_active_locked()는 가상 로봇(/ws/bridge) 전용 동작이 걸려있으니
+        건드리지 않는다."""
+        stmt = select(RobotTask).where(
+            RobotTask.status.in_(ACTIVE_TASK_STATUSES), RobotTask.start_pos_id.isnot(None)
+        )
+        return (await session.execute(lock_for_update(stmt, session))).scalars().first()
+
+    @staticmethod
     async def get_active_load_for_order_locked(session: AsyncSession, order_id: int) -> RobotTask | None:
         """작업요청(SQS) 경로의 success_load1/fail_load1/재시도 처리용: 해당 주문의
         활성 LOAD 작업을 찾는다."""

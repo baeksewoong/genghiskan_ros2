@@ -1,5 +1,6 @@
-"""robot-events(SQS) <- success_load1 / success_load2 / fail_load1 메시지 소비.
-PRD: assets/docs/prd-work-request-sqs.md 5장.
+"""robot-events(SQS) <- success_load1 / success_load2 / fail_load1 /
+jog_complete / jog_failed / gripper_complete / gripper_failed 메시지 소비.
+PRD: assets/docs/prd-work-request-sqs.md 5장, assets/docs/prd-teaching-pendant.md 6/7장.
 
 - {"work_id":1,"type":"success_load1"}: 베드 집기 성공. board_stock을 비우고 주문을
   LOADING으로 바꾼 뒤, 그 시점에 비어있는 프린터를 찾아 배치 명령(sd_pos_id)을
@@ -8,6 +9,11 @@ PRD: assets/docs/prd-work-request-sqs.md 5장.
   프린터를 RESERVED→PRINTING(타이머 시작)으로 바꾼다("작업중" 표시).
 - {"work_id":1,"type":"fail_load1"}: 베드 집기 실패. 로봇/주문 상태는 바꾸지 않고
   웹에 알럿만 띄워서 사람이 적재대를 확인하고 재시도("확인")하게 한다.
+- {"jog_id":"...","status":"jog_complete"/"jog_failed", ...}: 티칭 팬던트 조그 1스텝
+  완료/실패. work_id 계열과 필드명이 달라(status가 아니라 type이 아님) 서로
+  겹치지 않는다 — TeachingPendantService의 런타임 조그 세션 상태를 갱신한다.
+- {"gripper_cmd_id":"...","status":"gripper_complete"/"gripper_failed", ...}: 티칭
+  팬던트 그리퍼 개폐 완료/실패. 위와 동일한 경로.
 
 robot-events의 다른 이벤트(UNLOAD_COMPLETED/REJECTED 등 주문 상태를 더 진행시키는
 것)는 범위 밖이라 여기서는 무시한다."""
@@ -23,6 +29,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web
+from app.services.teaching_pendant_service import TeachingPendantService
 from app.services.work_request_service import WorkRequestService
 
 logger = logging.getLogger(__name__)
@@ -31,6 +38,13 @@ _LOAD_SUCCESS_TYPE = "success_load1"
 _PLACE_SUCCESS_TYPE = "success_load2"
 _LOAD_PICK_FAILED_TYPE = "fail_load1"
 _ERROR_BACKOFF_SEC = 3.0
+
+# 티칭 팬던트(조그/그리퍼) 이벤트 — PRD: assets/docs/prd-teaching-pendant.md 7장.
+# status 필드로 구분한다(LOAD 계열은 type 필드를 쓴다).
+_JOG_COMPLETE_STATUS = "jog_complete"
+_JOG_FAILED_STATUS = "jog_failed"
+_GRIPPER_COMPLETE_STATUS = "gripper_complete"
+_GRIPPER_FAILED_STATUS = "gripper_failed"
 
 
 async def _broadcast_sqs_event(event_type: str, data: dict) -> None:
@@ -114,6 +128,32 @@ class SqsConsumerService:
                 logger.error("fail_load1 work_id가 올바르지 않습니다: %s", body)
             except Exception:
                 logger.exception("fail_load1 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("status") == _JOG_COMPLETE_STATUS and "jog_id" in body:
+            try:
+                await TeachingPendantService.handle_jog_complete(str(body["jog_id"]), body.get("posx"))
+            except Exception:
+                logger.exception("jog_complete 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("status") == _JOG_FAILED_STATUS and "jog_id" in body:
+            try:
+                await TeachingPendantService.handle_jog_failed(str(body["jog_id"]), body.get("error_code"))
+            except Exception:
+                logger.exception("jog_failed 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("status") == _GRIPPER_COMPLETE_STATUS and "gripper_cmd_id" in body:
+            try:
+                await TeachingPendantService.handle_gripper_complete(str(body["gripper_cmd_id"]), body.get("state"))
+            except Exception:
+                logger.exception("gripper_complete 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("status") == _GRIPPER_FAILED_STATUS and "gripper_cmd_id" in body:
+            try:
+                await TeachingPendantService.handle_gripper_failed(
+                    str(body["gripper_cmd_id"]), body.get("error_code")
+                )
+            except Exception:
+                logger.exception("gripper_failed 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
                 return
 
         await SqsConsumerService._delete(client, message)

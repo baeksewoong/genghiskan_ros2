@@ -7,8 +7,9 @@ from app.repositories.base import lock_for_update
 
 
 class OrderRepository:
-    """orders 테이블 접근을 전담한다. 상태 변경(mutation)은 서비스 계층이
-    엔티티 속성을 직접 바꾸고 트랜잭션을 커밋하는 방식으로 처리한다."""
+    """orders 테이블 접근을 전담한다. 상태 변경(mutation)은 Order 엔티티의
+    전이 메서드(mark_loading 등)가 책임지고, 서비스 계층은 그 호출과 트랜잭션
+    커밋만 오케스트레이션한다."""
 
     @staticmethod
     def add(session: AsyncSession, order: Order) -> None:

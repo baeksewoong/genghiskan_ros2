@@ -5,6 +5,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.enums import (
     AlertReason,
     BoardStockStatus,
+    GripperAction,
+    JogRefFrame,
+    JogSpace,
     OrderSource,
     OrderStatus,
     PrinterStatus,
@@ -114,3 +117,44 @@ class HealthOut(BaseModel):
     db: bool
     bridge_connected: bool
     robot_state: RobotState
+
+
+# ---- 티칭 팬던트(실물 로봇 조그 제어) ----
+# PRD: assets/docs/prd-teaching-pendant.md 6장. 도메인 엔티티가 없는(DB 영속화 없음)
+# 기능이라 이 스키마들은 서비스가 다루는 런타임 상태 dict를 응답 DTO로 좁혀 담는다.
+
+
+class TeachingPendantSessionRequest(BaseModel):
+    enable: bool
+
+
+class TeachingPendantSessionOut(BaseModel):
+    enabled: bool
+    current_pose: dict | None = None
+
+
+class TeachingPendantJogRequest(BaseModel):
+    space: JogSpace
+    # TASK 모드일 때만 필요 (JOINT는 기준 좌표계 개념이 없음) — 서비스 계층에서
+    # space/axis 조합을 검증한다(PRD 9장 스텝 상한 포함).
+    ref_frame: JogRefFrame | None = None
+    axis: str
+    direction: int
+    step_size: float
+
+
+class TeachingPendantJogAccepted(BaseModel):
+    jog_id: str
+
+
+class TeachingPendantGripperRequest(BaseModel):
+    action: GripperAction
+
+
+class TeachingPendantGripperAccepted(BaseModel):
+    gripper_cmd_id: str
+
+
+class TeachingPendantStopOut(BaseModel):
+    ok: bool
+    message: str

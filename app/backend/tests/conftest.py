@@ -14,7 +14,7 @@ import pytest_asyncio
 
 from app.core.bootstrap import ensure_seed_data
 from app.core.database import AsyncSessionLocal, Base, engine
-from app.core.runtime import runtime
+from app.core.runtime import TeachingPendantSession, runtime
 from app.enums import RobotState
 
 
@@ -32,6 +32,9 @@ async def _fresh_database():
     runtime.bridge_ws = _FakeBridge()
     runtime.client_connections.clear()
     runtime.simulator_time_scale = 1.0
+    # 티칭 팬던트 조그 세션은 테스트마다 항상 비활성으로 시작한다 (PRD:
+    # prd-teaching-pendant.md 5장 — 서버 재시작 시 복원하지 않는 설계와 동일하게).
+    runtime.teaching_pendant = TeachingPendantSession()
 
     yield
 

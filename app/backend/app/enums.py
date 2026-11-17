@@ -90,3 +90,26 @@ class BoardStockStatus(str, Enum):
     EMPTY = "EMPTY"
     RESERVED = "RESERVED"
     OCCUPIED = "OCCUPIED"
+
+
+# ---- 티칭 팬던트(실물 로봇 조그 제어) 전용 값 객체 ----
+# (PRD: assets/docs/prd-teaching-pendant.md 5장) DB에 영속화하지 않는다 — 조그
+# 세션은 서버 런타임 상태(app.core.runtime)로만 관리하므로, 이 enum들도 런타임
+# 상태/SQS 메시지/API 스키마에서만 쓰는 값 객체다.
+
+
+class JogSpace(str, Enum):
+    TASK = "TASK"
+    JOINT = "JOINT"
+
+
+class JogRefFrame(str, Enum):
+    """TASK 모드일 때만 쓰는 기준 좌표계. JOINT 모드에는 해당 없음."""
+
+    BASE = "BASE"
+    TOOL = "TOOL"
+
+
+class GripperAction(str, Enum):
+    OPEN = "OPEN"
+    CLOSE = "CLOSE"

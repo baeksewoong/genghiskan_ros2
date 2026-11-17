@@ -4,8 +4,8 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import broadcast_to_web
-from app.enums import SHAPE_PRINT_DURATION_SEC, OrderSource, OrderStatus, Shape
-from app.models import Order
+from app.enums import OrderSource, OrderStatus, Shape
+from app.models import InvalidStateTransitionError, Order
 from app.repositories.order_repository import OrderRepository
 from app.repositories.user_repository import UserRepository
 from app.services.dispatcher_service import DispatcherService
@@ -37,15 +37,7 @@ class OrderService:
         name = customer_name or f"손님-{random.randint(0, 9999):04d}"
         user = await UserRepository.add(session, name=name, created_at=now)
 
-        order = Order(
-            user_id=user.id,
-            shape=chosen_shape,
-            print_duration_sec=SHAPE_PRINT_DURATION_SEC[chosen_shape],
-            status=OrderStatus.WAITING,
-            source=source,
-            created_at=now,
-            updated_at=now,
-        )
+        order = Order.create_new(user_id=user.id, shape=chosen_shape, source=source, now=now)
         OrderRepository.add(session, order)
         await session.flush()
 
@@ -66,14 +58,16 @@ class OrderService:
         """수령대에서 "수령하기"를 눌렀을 때만 PICKED_UP으로 전환한다 — 더 이상
         pickup_delay_sec이 지나면 자동으로 전환되지 않는다."""
         order = await OrderRepository.get_locked(session, order_id)
-        if order is None or order.status != OrderStatus.READY_FOR_PICKUP:
+        if order is None:
             await session.rollback()
             raise OrderNotPickupableError(order_id)
 
         now = datetime.utcnow()
-        order.status = OrderStatus.PICKED_UP
-        order.picked_up_at = now
-        order.updated_at = now
+        try:
+            order.mark_picked_up(now)
+        except InvalidStateTransitionError:
+            await session.rollback()
+            raise OrderNotPickupableError(order_id) from None
         await session.flush()
 
         await broadcast_to_web(session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json"))
