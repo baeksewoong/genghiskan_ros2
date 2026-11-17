@@ -570,10 +570,12 @@ def run_load(goal: Load.Goal, log=print) -> bool:
 
 
 def run_load2(goal: Load2.Goal, log=print) -> bool:
-    """Load2: (Load로 판재를 잡고 들어 올린 상태에서) 빼기 -> 작업대 sd_pos_id층으로 이동.
+    """Load2: (Load로 판재를 잡고 들어 올린 상태에서) 빼기 -> 작업대 sd_pos_id층 넣기 -> 홈 복귀.
 
-    1) pull_out: 높이 그대로 -X로 PULL_OUT_MM(230mm) 일자로 빼기
-    2) go_sd   : 작업대 3층으로 movej -> sd_pos_id층이면 movel로 내려감
+    1) pull_out  : 높이 그대로 -X로 PULL_OUT_MM(230mm) 일자로 빼기
+    2) go_sd     : 작업대 3층으로 movej -> sd_pos_id층이면 movel로 내려감
+    3) insert_sd : 작업대 넣기 (성공 시 그리퍼 열기)
+    4) retreat_sd -> 작업대 앞(SD_POS) -> go_home : 넣기 성공 시 그리퍼 빼고 홈 복귀
     좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
     """
     layer = goal.sd_pos_id
@@ -584,7 +586,18 @@ def run_load2(goal: Load2.Goal, log=print) -> bool:
     if layer not in poses.SD_INSERT_DONE_X:
         log(f'[load2] 작업대 {layer}층 넣기 좌표 없음 -> 작업대 앞에서 멈춤')
         return True
-    return insert_sd(layer, log=log)  # 턱에 걸려 놓았으면 True, 아니면 False (잡은 채로)
+    if not insert_sd(layer, log=log):
+        return False  # 미완료 시 잡은 채로 정지
+    retreat_sd(layer, log=log)
+    if layer in poses.SD_POS_J:
+        movej(posj(*poses.SD_POS_J[layer]), vel=VELJ, acc=ACCJ)
+    else:
+        _movel_checked(poses.SD_POS_X[layer])
+    if layer != poses.SD_TOP_LAYER:
+        movej(posj(*poses.SD_POS_J[poses.SD_TOP_LAYER]), vel=VELJ, acc=ACCJ)
+    log('[load2] 홈 이동')
+    go_home()
+    return True
 
 
 def unload_move_step(n: int, log=print) -> None:
