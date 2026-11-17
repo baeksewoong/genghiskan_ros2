@@ -269,6 +269,9 @@ class SqsEchoNode(Node):
         self.action_timeout_sec = float(
             self.declare_parameter('action_timeout_sec', 120.0).value
         )
+        self.visibility_timeout_sec = int(
+            self.declare_parameter('visibility_timeout_sec', 180).value
+        )
         self.load_stop_service = str(
             self.declare_parameter('load_stop_service', '/sfarm/load/stop').value
         )
@@ -337,7 +340,7 @@ class SqsEchoNode(Node):
                     QueueUrl=self.command_queue_url,
                     MaxNumberOfMessages=1,
                     WaitTimeSeconds=20,  # long polling
-                    VisibilityTimeout=60,
+                    VisibilityTimeout=self.visibility_timeout_sec,
                 )
             except (BotoCoreError, ClientError) as e:
                 self.get_logger().error(f'receive failed: {e}')
