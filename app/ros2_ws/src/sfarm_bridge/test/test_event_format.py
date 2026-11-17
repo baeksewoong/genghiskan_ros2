@@ -23,11 +23,12 @@ from sfarm_bridge.sfarm_bridge import (
     build_load2_result_event,
     build_robot_event,
     build_unload1_result_event,
+    build_unload2_result_event,
     DEFAULT_EVENT_QUEUE_URL,
     parse_task_command,
     SqsEchoNode,
 )
-from sfarm_interfaces.action import Load, Load1, Load2, Unload1
+from sfarm_interfaces.action import Load, Load1, Load2, Unload1, Unload2
 
 
 def test_default_event_queue_url():
@@ -112,6 +113,11 @@ def test_parse_task_command_load_and_unload():
     kind_u1, fields_u1 = parse_task_command(unload1_cmd)
     assert kind_u1 == 'UNLOAD1'
     assert fields_u1 == {'work_id': 180, 'sd_pos_id': 2}
+
+    unload2_cmd = {'type': 'unload2', 'work_id': 181}
+    kind_u2, fields_u2 = parse_task_command(unload2_cmd)
+    assert kind_u2 == 'UNLOAD2'
+    assert fields_u2 == {'work_id': 181}
 
     unload_cmd = {'work_id': 17, 'sd_pos_id': 2, 'receive_pos_id': 1}
     kind2, fields2 = parse_task_command(unload_cmd)
@@ -319,3 +325,56 @@ def test_build_and_handle_unload1_result():
     SqsEchoNode.handle_message(fake_node, msg_u1)
     fake_node.execute_unload1.assert_called_once_with(work_id=180, sd_pos_id=2)
     fake_node.delete.assert_called_once_with(msg_u1)
+
+
+def test_build_and_handle_unload2_result():
+    """Verify Unload2 SQS payloads, result callback, and handle_message dispatch."""
+    assert build_unload2_result_event(work_id=181, success=True) == {
+        'type': 'success_unload2',
+        'work_id': 181,
+    }
+    assert build_unload2_result_event(work_id=181, success=False) == {
+        'type': 'fail_unload2',
+        'work_id': 181,
+    }
+
+    fake_node = MagicMock()
+    fake_node.produce.return_value = True
+
+    ok_res = Unload2.Result()
+    ok_res.work_id = 181
+    ok_res.success = True
+    assert SqsEchoNode.handle_unload2_result(fake_node, ok_res, 181) is True
+    assert fake_node.produce.call_args[0][0] == {
+        'type': 'success_unload2',
+        'work_id': 181,
+    }
+    fake_node.call_load_stop_service.assert_not_called()
+
+    fake_node.reset_mock()
+    fake_node.produce.return_value = True
+
+    fail_res = Unload2.Result()
+    fail_res.work_id = 181
+    fail_res.success = False
+    assert SqsEchoNode.handle_unload2_result(fake_node, fail_res, 181) is True
+    fake_node.call_load_stop_service.assert_called_once_with(
+        error_type='fail_unload2',
+        work_id=181,
+        stage='unload2',
+    )
+    assert fake_node.produce.call_args[0][0] == {
+        'type': 'fail_unload2',
+        'work_id': 181,
+    }
+
+    fake_node.reset_mock()
+    fake_node.execute_unload2.return_value = (ok_res, True)
+    msg_u2 = {
+        'MessageId': 'msg-181',
+        'ReceiptHandle': 'rh-181',
+        'Body': '{"type": "unload2", "work_id": 181}',
+    }
+    SqsEchoNode.handle_message(fake_node, msg_u2)
+    fake_node.execute_unload2.assert_called_once_with(work_id=181)
+    fake_node.delete.assert_called_once_with(msg_u2)
