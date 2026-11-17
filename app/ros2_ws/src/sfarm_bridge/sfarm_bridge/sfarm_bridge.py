@@ -25,7 +25,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
-from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
+from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1, Unload2
 from sfarm_interfaces.srv import Error
 
 COMPLETED_EVENT = {'LOAD': 'LOAD_COMPLETED', 'UNLOAD': 'UNLOAD_COMPLETED'}
@@ -62,7 +62,7 @@ def _to_int(value) -> int | None:
 
 
 def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
-    """Parse an SQS command payload into ('LOAD' | 'LOAD2' | 'UNLOAD1' | 'UNLOAD', fields)."""
+    """Parse an SQS command into ('LOAD'|'LOAD2'|'UNLOAD1'|'UNLOAD2'|'UNLOAD', fields)."""
     if not isinstance(command, dict):
         return None, None
 
@@ -111,6 +111,11 @@ def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
         return 'UNLOAD1', {
             'work_id': work_id,
             'sd_pos_id': sd_pos_id,
+        }
+
+    if raw_type == 'UNLOAD2' and work_id is not None:
+        return 'UNLOAD2', {
+            'work_id': work_id,
         }
 
     is_unload = raw_type == 'UNLOAD' or (
@@ -175,39 +180,40 @@ def build_action_result_event(
     }
 
 
-def _build_load_stage_result_event(
-    stage_num: int,
-    work_id: int,
-    success: bool,
-) -> dict:
-    """Build a unified robot-events SQS payload for Load1/Load2."""
-    fail_type = (
-        Error.Request.TYPE_FAIL_LOAD1
-        if stage_num == 1
-        else Error.Request.TYPE_FAIL_LOAD2
-    )
+FAIL_EVENT_TYPES = {
+    'load1': Error.Request.TYPE_FAIL_LOAD1,
+    'load2': Error.Request.TYPE_FAIL_LOAD2,
+    'unload1': Error.Request.TYPE_FAIL_UNLOAD1,
+    'unload2': Error.Request.TYPE_FAIL_UNLOAD2,
+}
+
+
+def _build_stage_result_event(stage: str, work_id: int, success: bool) -> dict:
+    """Build a unified robot-events SQS payload for Load1/Load2/Unload1/Unload2."""
     return {
-        'type': f'success_load{stage_num}' if success else fail_type,
+        'type': f'success_{stage}' if success else FAIL_EVENT_TYPES[stage],
         'work_id': work_id,
     }
 
 
 def build_load1_result_event(work_id: int, success: bool) -> dict:
     """Build a unified robot-events SQS payload for Load1 success/failure."""
-    return _build_load_stage_result_event(1, work_id, success)
+    return _build_stage_result_event('load1', work_id, success)
 
 
 def build_load2_result_event(work_id: int, success: bool) -> dict:
     """Build a unified robot-events SQS payload for Load2 success/failure."""
-    return _build_load_stage_result_event(2, work_id, success)
+    return _build_stage_result_event('load2', work_id, success)
 
 
 def build_unload1_result_event(work_id: int, success: bool) -> dict:
     """Build a unified robot-events SQS payload for Unload1 success/failure."""
-    return {
-        'type': 'success_unload1' if success else Error.Request.TYPE_FAIL_UNLOAD1,
-        'work_id': work_id,
-    }
+    return _build_stage_result_event('unload1', work_id, success)
+
+
+def build_unload2_result_event(work_id: int, success: bool) -> dict:
+    """Build a unified robot-events SQS payload for Unload2 success/failure."""
+    return _build_stage_result_event('unload2', work_id, success)
 
 
 def load_dotenv() -> None:
@@ -282,6 +288,9 @@ class SqsEchoNode(Node):
         )
         self.unload1_client = ActionClient(
             self, Unload1, '/sfarm/unload1', callback_group=self.cb_group
+        )
+        self.unload2_client = ActionClient(
+            self, Unload2, '/sfarm/unload2', callback_group=self.cb_group
         )
         self.load_stop_client = self.create_client(
             Error, self.load_stop_service, callback_group=self.cb_group
@@ -400,6 +409,19 @@ class SqsEchoNode(Node):
             if result is None:
                 self.get_logger().warning(
                     'UNLOAD1 action did not complete; keeping SQS message for retry'
+                )
+                return
+            if event_sent:
+                self.delete(message)
+            return
+
+        if action_kind == 'UNLOAD2':
+            result, event_sent = self.execute_unload2(
+                work_id=goal_fields['work_id'],
+            )
+            if result is None:
+                self.get_logger().warning(
+                    'UNLOAD2 action did not complete; keeping SQS message for retry'
                 )
                 return
             if event_sent:
@@ -880,6 +902,124 @@ class SqsEchoNode(Node):
         self.get_logger().info(
             f'[/sfarm/unload1] ready for Unload2: work_id={work_id}'
         )
+
+    # ---------------------------------------------------------------- unload2 callbacks
+    def execute_unload2(
+        self,
+        work_id: int,
+    ) -> tuple[Unload2.Result | None, bool]:
+        """Send an Unload2 goal to /sfarm/unload2 and handle success/failure callbacks."""
+        if not self.unload2_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('/sfarm/unload2 action server is not available')
+            return None, False
+
+        goal_msg = Unload2.Goal()
+        goal_msg.work_id = work_id
+        self.get_logger().info(f'Sending goal to /sfarm/unload2: work_id={work_id}')
+
+        done_event = threading.Event()
+        holder: dict = {'result': None, 'event_sent': False}
+
+        goal_future = self.unload2_client.send_goal_async(
+            goal_msg, feedback_callback=self.on_unload2_feedback
+        )
+        goal_future.add_done_callback(
+            lambda fut: self.on_unload2_goal_response(
+                fut, done_event, holder, work_id
+            )
+        )
+
+        deadline = self.action_timeout_sec
+        waited = 0.0
+        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
+            if done_event.wait(timeout=0.5):
+                break
+            waited += 0.5
+            if waited >= deadline:
+                self.get_logger().error(f'/sfarm/unload2 timed out after {deadline}s')
+                return None, False
+
+        return holder['result'], bool(holder['event_sent'])
+
+    def on_unload2_feedback(self, feedback_msg) -> None:
+        """Handle Unload2 feedback (timestamps)."""
+        fb = feedback_msg.feedback
+        self.get_logger().info(
+            f'[/sfarm/unload2 feedback] work_id={fb.work_id} '
+            f'start_at={fb.start_at.sec}.{fb.start_at.nanosec:09d} '
+            f'end_at={fb.end_at.sec}.{fb.end_at.nanosec:09d}'
+        )
+
+    def on_unload2_goal_response(
+        self,
+        future,
+        done_event: threading.Event,
+        holder: dict,
+        work_id: int,
+    ) -> None:
+        """Handle Unload2 goal acceptance and attach result callback."""
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'/sfarm/unload2 goal error: {exc}')
+            done_event.set()
+            return
+
+        if not goal_handle.accepted:
+            self.get_logger().warning('/sfarm/unload2 goal was rejected')
+            done_event.set()
+            return
+
+        self.get_logger().info('/sfarm/unload2 goal accepted')
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda fut: self.on_unload2_result(fut, done_event, holder, work_id)
+        )
+
+    def on_unload2_result(
+        self,
+        future,
+        done_event: threading.Event,
+        holder: dict,
+        work_id: int,
+    ) -> None:
+        """Handle Unload2 result callback and dispatch success/failure actions."""
+        try:
+            result = future.result().result
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'/sfarm/unload2 result error: {exc}')
+            done_event.set()
+            return
+
+        holder['result'] = result
+        holder['event_sent'] = self.handle_unload2_result(result, work_id)
+        done_event.set()
+
+    def handle_unload2_result(
+        self,
+        result: Unload2.Result,
+        work_id: int,
+    ) -> bool:
+        """Process Unload2 completion: send unified SQS event and stop srv on failure."""
+        effective_work_id = result.work_id if result.work_id else work_id
+        event = build_unload2_result_event(effective_work_id, result.success)
+        sent = self.produce(event)
+
+        if result.success:
+            self.get_logger().info(
+                f'[/sfarm/unload2] succeeded: work_id={effective_work_id}'
+            )
+        else:
+            self.get_logger().error(
+                f'[/sfarm/unload2] failed: work_id={effective_work_id}'
+            )
+            self.call_load_stop_service(
+                error_type=Error.Request.TYPE_FAIL_UNLOAD2,
+                work_id=effective_work_id,
+                stage=Error.Request.STAGE_UNLOAD2,
+            )
+
+        return sent
 
     def call_load_stop_service(
         self,
