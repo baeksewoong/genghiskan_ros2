@@ -1,1 +1,0 @@
-/home/rokey/workspace/genghiskan_ros2/app/ros2_ws/src/build/sfarm_interfaces/rosidl_generator_cpp/sfarm_interfaces/action/detail/insert__traits.hpp

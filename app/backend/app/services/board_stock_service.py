@@ -10,6 +10,10 @@ from app.repositories.board_stock_repository import BoardStockRepository
 
 class BoardStockService:
     @staticmethod
+    async def list_all(session: AsyncSession) -> list[BoardStock]:
+        return await BoardStockRepository.list_all(session)
+
+    @staticmethod
     async def refill_complete(session: AsyncSession) -> list[BoardStock]:
         """"채우기 완료" 버튼: 사람이 적재대를 물리적으로 다 채운 뒤 누르면,
         그 시점에 EMPTY인 층을 모두 OCCUPIED로 바꾼다. 수량 입력은 받지 않는다

@@ -31,7 +31,6 @@ async def _fresh_database():
     runtime.current_task_id = None
     runtime.bridge_ws = _FakeBridge()
     runtime.client_connections.clear()
-    runtime.simulator_running = False
     runtime.simulator_time_scale = 1.0
 
     yield

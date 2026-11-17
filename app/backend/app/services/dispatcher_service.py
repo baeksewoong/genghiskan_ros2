@@ -15,7 +15,8 @@ from app.models import Order, Printer, RobotTask
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
-from app.schemas import OrderOut, PrinterOut
+from app.services.order_presenter import build_order_out
+from app.services.printer_presenter import build_printer_out
 
 
 @dataclass
@@ -50,10 +51,10 @@ class DispatcherService:
                     return
 
             await broadcast_to_web(
-                session, "order.updated", OrderOut.model_validate(reserved.order).model_dump(mode="json")
+                session, "order.updated", (await build_order_out(session, reserved.order)).model_dump(mode="json")
             )
             await broadcast_to_web(
-                session, "printer.updated", PrinterOut.model_validate(reserved.printer).model_dump(mode="json")
+                session, "printer.updated", (await build_printer_out(session, reserved.printer)).model_dump(mode="json")
             )
             await session.commit()
 
@@ -156,9 +157,11 @@ class DispatcherService:
                 printer.status = PrinterStatus.DONE
                 printer.updated_at = now
 
-            await broadcast_to_web(session, "order.updated", OrderOut.model_validate(order).model_dump(mode="json"))
             await broadcast_to_web(
-                session, "printer.updated", PrinterOut.model_validate(printer).model_dump(mode="json")
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+            )
+            await broadcast_to_web(
+                session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
             )
             await broadcast_to_web(session, "bridge.connection", {"connected": False})
             await session.commit()
