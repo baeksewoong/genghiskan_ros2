@@ -120,7 +120,7 @@ def pick_from_board(motions, layer: int = 3) -> bool:
 
 def build_commands(motions):
     """메뉴 이름 -> (설명, 실행 함수(인자 리스트)) 표."""
-    from sfarm_interfaces.action import Load, Load1, Load2, Unload
+    from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
 
     from sfarm_robot import force_test  # 힘 측정 테스트 (DR_init 설정 후라 여기서 import)
 
@@ -147,6 +147,10 @@ def build_commands(motions):
         s = int(args[0]) if len(args) > 0 else 3
         p = int(args[1]) if len(args) > 1 else 1
         return motions.run_load(Load.Goal(work_id=0, start_pos_id=s, pos_3d_id=p))
+
+    def unload1(args):
+        s = int(args[0]) if args else 3
+        return motions.run_unload1(Unload1.Goal(work_id=0, sd_pos_id=s))
 
     def unload(args):
         p = int(args[0]) if len(args) > 0 else 1
@@ -215,6 +219,7 @@ def build_commands(motions):
         'release': ('그리퍼 열기', lambda a: motions.grip_open()),
         'load1': ('run_load1 [start_pos_id(층)=3]  => True/False', load1),
         'load': ('run_load [start_pos_id(층)=3] (액션과 같은 동작: 잡고 들기, 멈춤)  => True/False', load),
+        'unload1': ('run_unload1 [sd_pos_id(층)=3] (액션과 같은 동작: 프린터 층 진입 -> 잡기+당기기 확인)  => True/False', unload1),
         'unload': ('run_unload (아직 동작 없음: 홈 이동)', unload),
         'fmon': ('[힘 테스트] 그 자리에서 힘 변화만 계속 출력 [초=10] (안 움직임)',
                  lambda a: force_test.fmon(float(a[0]) if a else 10.0)),

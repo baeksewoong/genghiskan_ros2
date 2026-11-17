@@ -56,12 +56,7 @@ UNLOAD_PULL_REACH_TOL_MM = 3.0      # 위치 제어 이동 후 목표에 이만�
 # TODO: 좌표가 모이면 한 번에 이어서 실행하는 run 동작으로 묶고, 완성되면 motions.run_unload()로 옮긴다.
 def move_step(motions, n: int) -> None:
     """UNLOAD_J[n] 좌표로 관절 이동 (느린 속도)."""
-    table = motions.poses.UNLOAD_J
-    if n not in table:
-        raise ValueError(f'{n}번 좌표 없음 (가능: {sorted(table)})')
-    name, j = table[n]
-    print(f'  [{n}] {name}: posj={j}  (vel={UNLOAD_VELJ} acc={UNLOAD_ACCJ})')
-    motions.movej(motions.posj(*j), vel=UNLOAD_VELJ, acc=UNLOAD_ACCJ)
+    motions.unload_move_step(n, log=print)
 
 
 def list_steps(motions) -> None:
@@ -71,91 +66,22 @@ def list_steps(motions) -> None:
 
 def move_pre(motions, layer: int) -> None:
     """층 진입전 좌표로 관절 이동 (없는 층이거나 진입전2와 같은 좌표면 건너뜀)."""
-    p = motions.poses
-    pre = getattr(p, 'UNLOAD_PRE_J', {}).get(layer)
-    if pre is None:
-        return
-    name, j = pre
-    if list(j) == list(p.UNLOAD_J[p.UNLOAD_BRANCH_FROM][1]):
-        print(f'  {name}: 진입전2와 같은 좌표 -> 이동 생략')
-        return
-    print(f'  {name}: posj={j}  (vel={UNLOAD_VELJ} acc={UNLOAD_ACCJ})')
-    motions.movej(motions.posj(*j), vel=UNLOAD_VELJ, acc=UNLOAD_ACCJ)
+    motions.unload_move_pre(layer, log=print)
 
 
 def enter_layer(motions, layer: int) -> None:
     """진입전2 -> (층 진입전) -> 언로드 layer층."""
-    move_pre(motions, layer)
-    move_step(motions, motions.poses.UNLOAD_LAYER_STEP[layer])
+    motions.unload_enter_layer(layer, log=print)
 
 
 def leave_layer(motions, layer: int) -> None:
     """언로드 layer층 -> (층 진입전) -> 진입전2."""
-    move_pre(motions, layer)
-    move_step(motions, motions.poses.UNLOAD_BRANCH_FROM)
+    motions.unload_leave_layer(layer, log=print)
 
 
 def grab_pull(motions, layer: int) -> bool:
-    """베드판을 잡고 -X로 당겨 턱에 걸리는 힘이 들어오는지 확인. 잡았으면 True (당겨진 위치에서 멈춤).
-
-    1) 지금 위치(원위치) 기억 -> 그리퍼 닫기 -> UNLOAD_SETTLE_SEC 대기
-    2) -X로 UNLOAD_PULL_POS_MM 위치 제어로 당김
-    3) 순응 제어 켜고 거기서 UNLOAD_PULL_COMPLIANCE_MM를 UNLOAD_PULL_STEP_MM씩 더 당기며 매번 힘 확인
-       -> X 방향 힘 변화 >= UNLOAD_CATCH_FORCE_N 이면 턱에 걸림 = 잡음 -> 순응 해제(그 자리 고정), True
-    4) 끝까지 당겨도 힘이 없으면 못 잡음 -> 순응 해제 -> 원위치로 되돌아가 그리퍼 열기 -> False
-    """
-    start = list(motions.get_current_poses()[1])
-    pos_mm = UNLOAD_PULL_POS_MM
-    total_mm = UNLOAD_PULL_POS_MM + UNLOAD_PULL_COMPLIANCE_MM
-    print(f'  [당기기] 언로드{layer}: 원위치 X={start[0]:.1f} Y={start[1]:.1f} Z={start[2]:.1f} '
-          f'-> 그리퍼 닫고 -X 최대 {total_mm:.0f}mm (위치 제어 {pos_mm:.0f}mm + 순응 {UNLOAD_PULL_COMPLIANCE_MM:.0f}mm)')
-    motions.grip_close()
-    motions.wait(UNLOAD_SETTLE_SEC)
-
-    def goto_x(x, vel, acc):
-        t = list(start)
-        t[0] = x
-        motions.movel(motions.posx(*t), vel=vel, acc=acc)
-        return t
-
-    # 2) 위치 제어로 앞부분 당기기
-    t = goto_x(start[0] - pos_mm, UNLOAD_PULL_VELX, UNLOAD_PULL_ACCX)
-    cur = list(motions.get_current_poses()[1])
-    if abs(cur[0] - t[0]) > UNLOAD_PULL_REACH_TOL_MM:
-        raise RuntimeError(f'당기는 목표에 못 감 (NOT REACHABLE?) 목표 X={t[0]:.1f} 현재 X={cur[0]:.1f}')
-    motions.wait(UNLOAD_SETTLE_SEC)
-    base = motions.read_force_xyz(UNLOAD_PULL_FORCE_SAMPLES)
-    print(f'  [당기기] 위치 제어 {pos_mm:.0f}mm 완료 (X={cur[0]:.1f}). 기준 힘 Fx={base[0]:+.2f} Fy={base[1]:+.2f} Fz={base[2]:+.2f} N')
-
-    # 3) 순응 제어로 마지막 구간
-    caught = False
-    motions.task_compliance_ctrl(stx=list(motions.COMPLIANCE_STX))
-    try:
-        motions.wait(0.3)
-        done = 0.0
-        while done < UNLOAD_PULL_COMPLIANCE_MM - 1e-9:
-            done = min(done + UNLOAD_PULL_STEP_MM, UNLOAD_PULL_COMPLIANCE_MM)
-            goto_x(start[0] - pos_mm - done, UNLOAD_PULL_VELX, UNLOAD_PULL_ACCX)
-            f = motions.read_force_xyz(UNLOAD_PULL_FORCE_SAMPLES)
-            cur = list(motions.get_current_poses()[1])
-            dfx = f[0] - base[0]
-            hit = abs(dfx) >= UNLOAD_CATCH_FORCE_N
-            print(f'  [당기기 순응 {done:.0f}/{UNLOAD_PULL_COMPLIANCE_MM:.0f}mm] X={cur[0]:.1f}  '
-                  f'dFx={dfx:+.2f}N  Fx={f[0]:+.2f} Fy={f[1]:+.2f} Fz={f[2]:+.2f}  '
-                  f'(기준 {UNLOAD_CATCH_FORCE_N}N) 턱{"O" if hit else "X"}')
-            if hit:
-                caught = True
-                break
-    finally:
-        motions.release_compliance_ctrl()   # 지금 위치에서 위치 제어로 고정
-
-    if caught:
-        return True
-    # 4) 못 잡음: 원위치로 되돌아가서 그리퍼 열기
-    print(f'  [당기기] 끝까지 당겨도 턱에 걸리는 힘 없음 -> 원위치(X={start[0]:.1f})로 되돌아감')
-    motions.movel(motions.posx(*start), vel=UNLOAD_PULL_VELX, acc=UNLOAD_PULL_ACCX)
-    motions.grip_open()
-    return False
+    """베드판을 잡고 -X로 당겨 턱에 걸리는 힘이 들어오는지 확인. 잡았으면 True (당겨진 위치에서 멈춤)."""
+    return motions.unload_grab_pull(layer, log=print)
 
 
 def gripper_key(motions, ans: str) -> bool:
