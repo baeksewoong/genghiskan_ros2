@@ -24,6 +24,8 @@ import math
 from DSR_ROBOT2 import (
     DR_AXIS_Z,
     DR_BASE,
+    DR_MV_MOD_REL,
+    DR_TOOL,
     OFF,
     ON,
     align_axis,
@@ -38,8 +40,31 @@ from DSR_ROBOT2 import (
     task_compliance_ctrl,
     wait,
 )
+# -------------------------------------------------------------------------
+# DR_MV_MOD_REL / DR_TOOL 검증 메모 (2026-11-18):
+# 이 개발 머신에는 DSR_ROBOT2가 설치돼 있지 않아(`python3 -c "import DSR_ROBOT2"` ->
+# ModuleNotFoundError) 실제 설치본에서 이 심볼들이 존재하는지 import 레벨로 확인하지
+# 못했다. 두산 공식 DRL 매뉴얼(movel/movej 문서, PRD 1장 참고 링크)상으로는 이
+# 이름들이 맞고, movel/movej의 mod=DR_MV_MOD_REL 상대 이동과 ref=DR_TOOL 툴
+# 좌표계 기준 이동이 공식 예제에 나온다 (Plan A). 실제 로봇/시뮬레이터(DRCF)가
+# 연결된 환경에서 ImportError가 나면, 설치된 DSR_ROBOT2 버전의 실제 심볼명을
+# 확인해 아래 run_jog()와 함께 고쳐야 한다 (PRD 9장 미결 사항, Plan B로
+# 전환할지도 그때 재판단).
+# (DR_QSTOP/DR_SSTOP/stop은 여기서 쓰지 않는다 - PRD 5.3대로 /sfarm/jog/stop
+# 서비스가 motions.py를 거치지 않고 robot_action_server.py에서 직접
+# DSR_ROBOT2를 import해 호출한다.)
+# -------------------------------------------------------------------------
 
-from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1, Unload2
+from sfarm_interfaces.action import (
+    Gripper,
+    Jog,
+    Load,
+    Load1,
+    Load2,
+    Unload,
+    Unload1,
+    Unload2,
+)
 
 from . import poses, unload_poses
 
@@ -815,3 +840,91 @@ def run_unload(goal: Unload.Goal, log=print) -> bool:
     """Unload: 아직 동작 없음. 홈 위치로만 이동."""
     go_home()
     return True
+
+
+# ---------------------------------------------------------------- 조그 (신규 상수)
+# 조그는 힘 기반 안전장치(무게 감지, 걸림 감지)가 없는 자유공간 이동이라
+# LOAD/UNLOAD 기본값보다 더 낮게 둔다 (부모 PRD 9장: "절반 이하" 권장보다 더 낮춤).
+JOG_VELJ, JOG_ACCJ = 15.0, 15.0     # deg, deg/s^2  (기존 VELJ/ACCJ=30의 절반)
+JOG_VELX, JOG_ACCX = 30.0, 30.0     # mm/s, mm/s^2  (기존 VELX/ACCX=100의 1/3 - 힘 감지 없음 고려)
+
+# 부모 PRD 9장 상한과 동일 (안전 마진을 줄이지 않고, ROS 2 쪽에서 한 번 더 검증)
+JOG_MAX_LINEAR_MM = 20.0
+JOG_MAX_ROT_DEG = 15.0
+JOG_MAX_JOINT_DEG = 15.0
+
+_TASK_AXIS_INDEX = {'X': 0, 'Y': 1, 'Z': 2, 'RX': 3, 'RY': 4, 'RZ': 5}
+_JOINT_AXIS_INDEX = {f'J{i + 1}': i for i in range(6)}
+_REF_FRAME = {'BASE': DR_BASE, 'TOOL': DR_TOOL}
+
+
+class JogRejected(Exception):
+    """스텝 상한 초과 등 실행 전 검증 실패 (모션 자체는 일어나지 않음)."""
+
+
+def run_jog(goal: 'Jog.Goal', log=print) -> tuple[bool, list[float], list[float]]:
+    """goal(space/ref_frame/axis/direction/step_size)을 실제 이동으로 변환.
+
+    반환: (성공 여부, posj[6], posx[6]) - 실패해도 현재 위치는 돌려준다(웹 표시용).
+
+    space='TASK'/'JOINT', ref_frame='BASE'/'TOOL'(TASK일 때만), axis는
+    TASK: X/Y/Z/RX/RY/RZ, JOINT: J1..J6. 상한 초과나 알 수 없는 값은
+    JogRejected로 거절한다(모션 전 검증, 로봇은 움직이지 않음).
+
+    PRD 4.2 Plan A(네이티브 mod=DR_MV_MOD_REL 상대 이동)를 그대로 쓴다. 이 머신에는
+    DSR_ROBOT2가 설치돼 있지 않아 movej/movel의 mod/ref 키워드 인자를 실제로
+    import-level로 검증하지 못했다 - 실제 로봇/시뮬레이터 연결 환경에서 반드시
+    재확인할 것 (모듈 상단 주석, PRD 1장/9장 참고).
+    """
+    space = goal.space
+    axis = goal.axis
+    step = abs(goal.step_size)
+    direction = 1 if goal.direction >= 0 else -1
+
+    if space == 'JOINT':
+        if axis not in _JOINT_AXIS_INDEX:
+            raise JogRejected(f'알 수 없는 JOINT 축: {axis}')
+        if step > JOG_MAX_JOINT_DEG:
+            raise JogRejected(f'JOINT 스텝 상한 초과: {step}deg > {JOG_MAX_JOINT_DEG}deg')
+        delta = [0.0] * 6
+        delta[_JOINT_AXIS_INDEX[axis]] = direction * step
+        log(f'[jog] JOINT {axis} {"+" if direction > 0 else "-"}{step}deg')
+        movej(posj(*delta), vel=JOG_VELJ, acc=JOG_ACCJ, mod=DR_MV_MOD_REL)
+
+    elif space == 'TASK':
+        if axis not in _TASK_AXIS_INDEX:
+            raise JogRejected(f'알 수 없는 TASK 축: {axis}')
+        idx = _TASK_AXIS_INDEX[axis]
+        limit = JOG_MAX_LINEAR_MM if idx < 3 else JOG_MAX_ROT_DEG
+        if step > limit:
+            raise JogRejected(f'TASK 스텝 상한 초과 ({axis}): {step} > {limit}')
+        ref = _REF_FRAME.get(goal.ref_frame)
+        if ref is None:
+            raise JogRejected(f'알 수 없는 ref_frame: {goal.ref_frame}')
+        delta = [0.0] * 6
+        delta[idx] = direction * step
+        log(f'[jog] TASK {axis} {"+" if direction > 0 else "-"}{step} ref={goal.ref_frame}')
+        movel(posx(*delta), vel=JOG_VELX, acc=JOG_ACCX, ref=ref, mod=DR_MV_MOD_REL)
+
+    else:
+        raise JogRejected(f'알 수 없는 space: {space}')
+
+    posj_vals, posx_vals = get_current_poses()
+    return True, posj_vals, posx_vals
+
+
+def run_gripper(goal: 'Gripper.Goal', log=print) -> tuple[bool, str]:
+    """goal.action('OPEN'|'CLOSE')에 따라 그리퍼 개폐.
+
+    항상 성공(True)으로 본다(파지 피드백은 부모 PRD 1장 범위 밖 - 디지털 출력을
+    내리는 것 자체는 실패할 수 있는 지점이 거의 없음).
+    """
+    action = goal.action
+    log(f'[gripper] {action}')
+    if action == 'OPEN':
+        grip_open()
+    elif action == 'CLOSE':
+        grip_close()
+    else:
+        raise ValueError(f'알 수 없는 gripper action: {action}')
+    return True, action

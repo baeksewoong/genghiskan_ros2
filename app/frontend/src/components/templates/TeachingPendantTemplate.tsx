@@ -1,39 +1,25 @@
 import type { ReactNode } from "react";
 
 interface TeachingPendantTemplateProps {
-  activation: ReactNode;
-  status: ReactNode;
-  modeControls: ReactNode;
-  gripper: ReactNode;
-  stop: ReactNode;
-  jogPad: ReactNode;
+  armViewer: ReactNode;
+  // 3D 뷰어 오른쪽에 나란히 붙는 "리모컨" 패널(RemoteControlPanel organism) — 활성화/
+  // 상태/조그/그리퍼/정지가 전부 탭으로 들어가 있다.
+  remoteControl: ReactNode;
 }
 
-/** 순수 레이아웃 — 모든 콘텐츠를 ReactNode로 받아 배치만 한다. 조그 패드는 12개
- * 방향키 버튼이 들어가므로 그리드 아래 전체 폭으로 따로 둔다. */
-export function TeachingPendantTemplate({
-  activation,
-  status,
-  modeControls,
-  gripper,
-  stop,
-  jogPad,
-}: TeachingPendantTemplateProps) {
+/** 순수 레이아웃 — 모든 콘텐츠를 ReactNode로 받아 배치만 한다. 홈 대시보드에서 쓰던
+ * `.arm-dashboard-row` 레이아웃(DashboardTemplate)과 동일한 구성을 그대로 재사용한다. */
+export function TeachingPendantTemplate({ armViewer, remoteControl }: TeachingPendantTemplateProps) {
   return (
     <div className="app">
       <header className="topbar">
         <h1>티칭 팬던트 (실물 로봇 조그 제어)</h1>
       </header>
 
-      <main className="layout">
-        {activation}
-        {status}
-        {modeControls}
-        {gripper}
-        {stop}
-      </main>
-
-      {jogPad}
+      <div className="arm-dashboard-row">
+        {armViewer}
+        {remoteControl}
+      </div>
     </div>
   );
 }

@@ -46,8 +46,13 @@ function PrinterTimer({ endsAt }: { endsAt: string }) {
  * 쓴다 — PrinterRepository.first_empty_locked). */
 export function PrinterPanel({ printers }: PrinterPanelProps) {
   return (
-    <section className="panel printer-panel">
-      <h2>작업대 현황</h2>
+    <section className="panel kiosk-card printer-panel">
+      <h2>
+        <span className="kiosk-card-icon" aria-hidden="true">
+          🖨️
+        </span>
+        작업대 현황
+      </h2>
       {!printers ? (
         <p>불러오는 중...</p>
       ) : (

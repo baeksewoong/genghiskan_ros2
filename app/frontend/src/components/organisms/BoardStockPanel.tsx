@@ -21,8 +21,13 @@ interface BoardStockPanelProps {
  * 층)부터 집으므로, 큰 슬롯 번호를 위로 오게 정렬해 실제 적재대 모양과 맞춘다. */
 export function BoardStockPanel({ slots }: BoardStockPanelProps) {
   return (
-    <section className="panel board-stock-panel">
-      <h2>적재대 현황</h2>
+    <section className="panel kiosk-card board-stock-panel">
+      <h2>
+        <span className="kiosk-card-icon" aria-hidden="true">
+          📦
+        </span>
+        적재대 현황
+      </h2>
       {!slots ? (
         <p>불러오는 중...</p>
       ) : (
