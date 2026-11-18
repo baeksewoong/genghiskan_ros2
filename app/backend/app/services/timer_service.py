@@ -42,7 +42,8 @@ class TimerService:
                 # 자체 UNLOAD 디스패치(DispatcherService)를 그대로 쓴다.
                 load_task = await RobotTaskRepository.get_load_task_for_order(session, order.id)
                 if load_task is not None and load_task.start_pos_id is not None:
-                    await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=printer.slot)
+                    # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
+                    await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=3)
 
                 await broadcast_to_web(
                     session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
