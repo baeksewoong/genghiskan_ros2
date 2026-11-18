@@ -394,17 +394,7 @@ def test_build_and_handle_unload2_result():
 
 def test_robot_busy_blocks_sqs_polling_and_dispatch(monkeypatch):
     """Verify sfarm_bridge does not poll SQS or dispatch/produce while robot is busy."""
-    fake_node = MagicMock()
-    fake_node._robot_busy_lock = threading.Lock()
-    fake_node._robot_busy_event = threading.Event()
-    fake_node._active_action_name = None
-    fake_node._is_robot_busy.side_effect = lambda: SqsEchoNode._is_robot_busy(fake_node)
-    fake_node._try_acquire_robot_busy.side_effect = (
-        lambda name: SqsEchoNode._try_acquire_robot_busy(fake_node, name)
-    )
-    fake_node._clear_robot_busy.side_effect = (
-        lambda: SqsEchoNode._clear_robot_busy(fake_node)
-    )
+    fake_node = _make_bundle_test_node()
 
     assert SqsEchoNode._try_acquire_robot_busy(fake_node, '/sfarm/load1') is True
     assert SqsEchoNode._is_robot_busy(fake_node) is True
@@ -447,19 +437,9 @@ def test_robot_busy_blocks_sqs_polling_and_dispatch(monkeypatch):
 
 def test_execute_load1_clears_busy_on_reject_and_keeps_busy_on_timeout():
     """Verify _robot_busy clears on rejection and stays set on action timeout."""
-    fake_node = MagicMock()
-    fake_node._robot_busy_lock = threading.Lock()
-    fake_node._robot_busy_event = threading.Event()
-    fake_node._active_action_name = None
+    fake_node = _make_bundle_test_node()
     fake_node.action_timeout_sec = 0.0
     fake_node.stop = threading.Event()
-    fake_node._is_robot_busy.side_effect = lambda: SqsEchoNode._is_robot_busy(fake_node)
-    fake_node._try_acquire_robot_busy.side_effect = (
-        lambda name: SqsEchoNode._try_acquire_robot_busy(fake_node, name)
-    )
-    fake_node._clear_robot_busy.side_effect = (
-        lambda: SqsEchoNode._clear_robot_busy(fake_node)
-    )
     fake_node._wait_for_action_done.side_effect = (
         lambda name, evt: SqsEchoNode._wait_for_action_done(fake_node, name, evt)
     )
@@ -479,3 +459,142 @@ def test_execute_load1_clears_busy_on_reject_and_keeps_busy_on_timeout():
     res, sent = SqsEchoNode.execute_load1(fake_node, work_id=11, start_pos_id=3)
     assert (res, sent) == (None, False)
     assert SqsEchoNode._is_robot_busy(fake_node) is True
+
+
+def _make_bundle_test_node():
+    """Create a MagicMock bridge node wired with real busy/bundle state helpers."""
+    fake_node = MagicMock()
+    fake_node._robot_busy_lock = threading.Lock()
+    fake_node._robot_busy_event = threading.Event()
+    fake_node._active_action_name = None
+    fake_node._active_bundle = None
+    fake_node._is_robot_busy.side_effect = lambda: SqsEchoNode._is_robot_busy(fake_node)
+    fake_node._get_active_bundle.side_effect = (
+        lambda: SqsEchoNode._get_active_bundle(fake_node)
+    )
+    fake_node._is_command_allowed_in_bundle.side_effect = (
+        lambda kind, wid: SqsEchoNode._is_command_allowed_in_bundle(fake_node, kind, wid)
+    )
+    fake_node._try_acquire_robot_busy.side_effect = (
+        lambda name, bundle_action=None, work_id=None: SqsEchoNode._try_acquire_robot_busy(
+            fake_node, name, bundle_action=bundle_action, work_id=work_id
+        )
+    )
+    fake_node._clear_robot_busy.side_effect = (
+        lambda clear_bundle=True: SqsEchoNode._clear_robot_busy(
+            fake_node, clear_bundle=clear_bundle
+        )
+    )
+    return fake_node
+
+
+def test_load_bundle_blocks_other_commands_until_load2_completes():
+    """Verify load1+load2 acts as one bundle blocking unrelated commands in between."""
+    fake_node = _make_bundle_test_node()
+    fake_node.handle_load1_result.return_value = True
+    fake_node.handle_load2_result.return_value = True
+
+    # Start load1 for work_id=42 -> bundle ('LOAD', 42) active, then load1 succeeds
+    assert SqsEchoNode._try_acquire_robot_busy(
+        fake_node, '/sfarm/load1', bundle_action='LOAD', work_id=42
+    ) is True
+    res_l1 = MagicMock()
+    res_l1.result.return_value.result = Load1.Result(work_id=42, success=True)
+    SqsEchoNode.on_load1_result(fake_node, res_l1, threading.Event(), {}, 42, None)
+
+    assert SqsEchoNode._is_robot_busy(fake_node) is False
+    assert SqsEchoNode._get_active_bundle(fake_node) == ('LOAD', 42)
+
+    # Between load1 and load2, other commands (JOG, other LOAD, UNLOAD1, wrong LOAD2) are blocked
+    for body in (
+        '{"type": "JOG", "jog_id": "j1", "space": "TASK", "axis": "X", '
+        '"direction": 1, "step_size": 5}',
+        '{"work_id": 43, "start_pos_id": 3}',
+        '{"type": "unload1", "work_id": 42, "sd_pos_id": 3}',
+        '{"type": "load2", "work_id": 43, "sd_pos_id": 2}',
+        '{"type": "UNKNOWN"}',
+    ):
+        msg = {'MessageId': 'm', 'ReceiptHandle': 'rh', 'Body': body}
+        assert SqsEchoNode.handle_message(fake_node, msg) is False
+
+    fake_node.execute_jog.assert_not_called()
+    fake_node.execute_load1.assert_not_called()
+    fake_node.execute_unload1.assert_not_called()
+    fake_node.execute_load2.assert_not_called()
+    fake_node.produce.assert_not_called()
+    fake_node.delete.assert_not_called()
+
+    # Matching load2 for work_id=42 is allowed and closes the bundle on completion
+    fake_node.execute_load2.return_value = (Load2.Result(work_id=42, success=True), True)
+    msg_l2 = {
+        'MessageId': 'm-l2',
+        'ReceiptHandle': 'rh-l2',
+        'Body': '{"type": "load2", "work_id": 42, "sd_pos_id": 2}',
+    }
+    assert SqsEchoNode.handle_message(fake_node, msg_l2) is True
+    fake_node.execute_load2.assert_called_once_with(work_id=42, sd_pos_id=2)
+    fake_node.delete.assert_called_once_with(msg_l2)
+
+    assert SqsEchoNode._try_acquire_robot_busy(
+        fake_node, '/sfarm/load2', bundle_action='LOAD2', work_id=42
+    ) is True
+    res_l2 = MagicMock()
+    res_l2.result.return_value.result = Load2.Result(work_id=42, success=True)
+    SqsEchoNode.on_load2_result(fake_node, res_l2, threading.Event(), {}, 42)
+    assert SqsEchoNode._get_active_bundle(fake_node) is None
+
+
+def test_unload_bundle_blocks_other_commands_until_unload2_completes():
+    """Verify unload1+unload2 acts as one bundle blocking unrelated commands in between."""
+    fake_node = _make_bundle_test_node()
+    fake_node.handle_unload1_result.return_value = True
+    fake_node.handle_unload2_result.return_value = True
+
+    assert SqsEchoNode._try_acquire_robot_busy(
+        fake_node, '/sfarm/unload1', bundle_action='UNLOAD1', work_id=55
+    ) is True
+    res_u1 = MagicMock()
+    res_u1.result.return_value.result = Unload1.Result(work_id=55, success=True)
+    SqsEchoNode.on_unload1_result(fake_node, res_u1, threading.Event(), {}, 55)
+
+    assert SqsEchoNode._get_active_bundle(fake_node) == ('UNLOAD', 55)
+
+    for body in (
+        '{"work_id": 56, "start_pos_id": 3}',
+        '{"type": "GRIPPER", "gripper_cmd_id": "g1", "action": "OPEN"}',
+        '{"type": "unload2", "work_id": 56, "receive_pos_id": 1}',
+    ):
+        msg = {'MessageId': 'm', 'ReceiptHandle': 'rh', 'Body': body}
+        assert SqsEchoNode.handle_message(fake_node, msg) is False
+
+    fake_node.execute_unload2.return_value = (Unload2.Result(work_id=55, success=True), True)
+    msg_u2 = {
+        'MessageId': 'm-u2',
+        'ReceiptHandle': 'rh-u2',
+        'Body': '{"type": "unload2", "work_id": 55, "receive_pos_id": 1}',
+    }
+    assert SqsEchoNode.handle_message(fake_node, msg_u2) is True
+    fake_node.execute_unload2.assert_called_once_with(work_id=55, receive_pos_id=1)
+
+    assert SqsEchoNode._try_acquire_robot_busy(
+        fake_node, '/sfarm/unload2', bundle_action='UNLOAD2', work_id=55
+    ) is True
+    res_u2 = MagicMock()
+    res_u2.result.return_value.result = Unload2.Result(work_id=55, success=True)
+    SqsEchoNode.on_unload2_result(fake_node, res_u2, threading.Event(), {}, 55)
+    assert SqsEchoNode._get_active_bundle(fake_node) is None
+
+
+def test_load1_failure_clears_bundle_for_retry():
+    """Verify failed load1 clears active bundle so retry-load can run."""
+    fake_node = _make_bundle_test_node()
+    fake_node.handle_load1_result.return_value = True
+
+    assert SqsEchoNode._try_acquire_robot_busy(
+        fake_node, '/sfarm/load1', bundle_action='LOAD', work_id=66
+    ) is True
+    res_fail = MagicMock()
+    res_fail.result.return_value.result = Load1.Result(work_id=66, success=False)
+    SqsEchoNode.on_load1_result(fake_node, res_fail, threading.Event(), {}, 66, None)
+
+    assert SqsEchoNode._get_active_bundle(fake_node) is None
