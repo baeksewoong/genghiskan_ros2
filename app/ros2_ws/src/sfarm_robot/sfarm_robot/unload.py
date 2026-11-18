@@ -8,7 +8,7 @@
   ros2 run sfarm_robot unload            # 메뉴에서 골라서 실행 (반복)
   ros2 run sfarm_robot unload step 1     # 바로 실행: 1번 좌표(홈)로 이동
   ros2 run sfarm_robot unload run        # 한 단계씩 (Enter 진행 / b 전 단계 / g 잡기 / r 놓기 / q 멈춤). 진입전2에서 언로드 층 3/2/1 선택
-  ros2 run sfarm_robot unload extract 9  # [테스트] 베드 빼내기를 9번부터 (베드판 잡은 상태에서). 11번 -> 수령대 선택 -> 복귀까지
+  ros2 run sfarm_robot unload peek [층]   # [가상 확인] 진입전2에서 빼내기 위치(2-3 -> 2-2 -> 2-1)만 보고 돌아옴
   ros2 run sfarm_robot unload back       # 지금 단계에서 한 단계씩 거꾸로 (back 3 = 3번까지만)
   ros2 run sfarm_robot unload pose      # 현재 위치 좌표 출력
 
@@ -26,6 +26,11 @@ ROBOT_MODEL = 'm0609'
 DR_init.__dsr__id = ROBOT_ID
 DR_init.__dsr__model = ROBOT_MODEL
 
+
+# ---------------------------------------------------------------- 가상 테스트
+# True면 언로드 층에 도착했을 때 그리퍼 닫기 / -X 당기기 / 힘 확인(grab_pull)을 건너뛰고 '잡았다'고 가정해서
+# 바로 베드 빼내기 좌표로 이어간다 (가상 로봇처럼 힘 센서가 없을 때). 실제 로봇에서는 False.
+ASSUME_GRAB = False
 
 # ---------------------------------------------------------------- 속도 (테스트용: 느리게)
 # 동작이 검증되면 올린다. 단위: movej = deg/s, movel = mm/s
@@ -98,14 +103,19 @@ def gripper_key(motions, ans: str) -> bool:
     return False
 
 
-def extract_after_grab(motions, layer: int, start: int | None = None) -> bool:
+def step_is_linear(motions, n: int) -> bool:
+    """빼내기 이후 n번 좌표를 movel(직선)로 갈지: UNLOAD_MOVEL_STEPS에 있거나 UNLOAD_MOVEL_FROM_STEP 이상."""
+    p = motions.unload_poses
+    return bool(motions.UNLOAD_USE_MOVEL and (
+        n in getattr(p, 'UNLOAD_MOVEL_STEPS', ()) or n >= getattr(p, 'UNLOAD_MOVEL_FROM_STEP', 14)))
+
+
+def extract_after_grab(motions, layer: int) -> bool:
     """잡기 성공 후 UNLOAD_EXTRACT_STEPS[layer] 좌표를 차례로 이동 (Enter=진행, q=멈춤).
     끝까지 갔으면 True. 이 층에 이어갈 좌표가 없거나 q로 멈추면 False (층 선택 화면으로 돌아감)."""
     p = motions.unload_poses
     table = p.UNLOAD_J
     steps = list(getattr(p, 'UNLOAD_EXTRACT_STEPS', {}).get(layer, []))
-    if start is not None:
-        steps = [n for n in steps if n >= start]   # 테스트용: 이 번호부터 시작
     if not steps:
         return False
     for n in steps:
@@ -114,8 +124,10 @@ def extract_after_grab(motions, layer: int, start: int | None = None) -> bool:
         if ans == 'q':
             print(f'  {n}번 앞에서 멈춤 (베드판 잡은 상태)')
             return True
-        linear = motions.UNLOAD_USE_MOVEL and n >= getattr(p, 'UNLOAD_MOVEL_FROM_STEP', 10)
-        motions.unload_move_step(n, log=print, linear=linear)
+        motions.unload_move_step(n, log=print, linear=step_is_linear(motions, n))
+    if layer not in getattr(p, 'UNLOAD_DELIVER_LAYERS', ()):
+        print(f'  언로드{layer} 베드 빼내기 끝 (그리퍼는 닫힌 채, 마지막 좌표). 베드판 올려놓기는 아직 연결 안 됨')
+        return True
     print(f'  언로드{layer} 베드 빼내기 끝 (그리퍼는 닫힌 채, 마지막 좌표) -> 수령대로')
     deliver_and_return(motions, table[steps[-1]][0], table[steps[-1]][1])
     return True
@@ -178,7 +190,7 @@ def deliver_and_return(motions, last_name: str, last_j) -> None:
             continue
         print(f'  수령대{ans} 도착 -> 그리퍼 열기 (놓기)')
         motions.grip_open()
-        for name, jj in back:
+        for name, jj in getattr(p, 'UNLOAD_RECV_RETURN_J', {}).get(int(ans), back):   # 수령대별 경로가 없으면 공통 복귀
             a = input(f'  {name} {jj} 로 이동할까요? (Enter=진행, q=멈춤) ').strip().lower()
             if a == 'q':
                 print(f'  {name} 앞에서 멈춤')
@@ -213,6 +225,9 @@ def run_steps(motions, start: int = 1, end: int | None = None) -> None:
     def try_grab(layer: int) -> bool:
         """도착 -> 1초 대기 -> 잡고 -X로 당겨 턱 확인 (grab_pull). 잡았으면 SUCCESS 후 그 자리에서 다음 동작 대기.
         못 잡았으면 FAIL, 원위치로 돌아와 그리퍼 열림."""
+        if ASSUME_GRAB:
+            print(f'  [가상] 언로드{layer} 도착 -> 베드판을 잡았다고 가정 (그리퍼/힘 확인/당기기 생략, ASSUME_GRAB=True)')
+            return True
         print(f'  언로드{layer} 도착 -> {UNLOAD_ARRIVE_WAIT_SEC:.0f}초 대기 후 잡기')
         motions.wait(UNLOAD_ARRIVE_WAIT_SEC)
         if grab_pull(motions, layer):
@@ -289,13 +304,42 @@ def run_steps(motions, start: int = 1, end: int | None = None) -> None:
         print(f'  입력 오류: {opts} 중 하나, b, c, g, r, q')
 
 
-def extract_from(motions, start: int = 9, layer: int = 3) -> None:
-    """테스트용: 베드판을 잡고 있는 상태에서 베드 빼내기를 start번 좌표부터 이어서 한다 (run 앞부분 생략)."""
-    steps = getattr(motions.unload_poses, 'UNLOAD_EXTRACT_STEPS', {}).get(layer, [])
-    if start not in steps:
-        raise ValueError(f'언로드{layer} 빼내기 번호에 {start}번 없음 (가능: {steps})')
-    print(f'  언로드{layer} 빼내기를 {start}번부터 시작 (베드판을 잡고 있어야 함. 그리퍼 g=잡기)')
-    extract_after_grab(motions, layer, start=start)
+PEEK_LAYERS = (3, 2, 1)   # peek 순서: 언로드2-3(3층) -> 언로드2-2(2층) -> 언로드2-1(1층)
+
+
+def peek_extract(motions, layer: int | None = None) -> None:
+    """[가상 확인용] 진입전2에서 출발해 빼내기 좌표(첫번째 -> 두번째)만 눈으로 확인하고 진입전2로 돌아온다.
+
+    layer를 주면 그 층(3/2/1)만, 안 주면 3 -> 2 -> 1층 순서로 전부.
+    언로드 층 진입 / 잡기는 하지 않는다. 좌표마다 Enter로 진행, q로 멈추면 그 자리에서 진입전2로 돌아온다."""
+    p = motions.unload_poses
+    table = p.UNLOAD_J
+    frm = p.UNLOAD_BRANCH_FROM
+    if current_step(motions) != frm:
+        raise ValueError(f'진입전2({frm}번)에서 시작해야 함 -> `step {frm}`로 먼저 이동하세요')
+    layers = [layer] if layer else list(PEEK_LAYERS)
+    for lay in layers:
+        place = getattr(p, 'UNLOAD_PLACE_STEPS', [])
+        coords = [n for n in p.UNLOAD_EXTRACT_STEPS.get(lay, []) if n not in place]   # 빼내기 좌표만 (올려놓기 이전)
+        if not coords:
+            raise ValueError(f'언로드{lay}층 빼내기 좌표 없음 (UNLOAD_EXTRACT_STEPS)')
+        print(f'  --- 언로드{lay}층 빼내기 위치 확인 ({", ".join(str(n) for n in coords)}번) ---')
+        visited = []
+        stop = False
+        for n in coords:
+            name, j = table[n]
+            ans = input(f'  [{n}] {name} {j} 로 이동할까요? (Enter=진행, q=멈추고 진입전2로 복귀) ').strip().lower()
+            if ans == 'q':
+                stop = True
+                break
+            motions.unload_move_step(n, log=print, linear=False)
+            visited.append(n)
+        for n in reversed(visited[:-1]):
+            motions.unload_move_step(n, log=print, linear=False)
+        move_step(motions, frm)
+        print(f'  언로드{lay}층 확인 끝 -> 진입전2로 돌아옴')
+        if stop:
+            return
 
 
 STEP_MATCH_TOL_DEG = 3.0   # 현재 관절각이 좌표와 이 값 이내면 '그 단계에 있음'으로 본다
@@ -389,10 +433,8 @@ def build_commands(motions):
                 lambda a: run_steps(motions,
                                     int(a[0]) if len(a) > 0 else 1,
                                     int(a[1]) if len(a) > 1 else None)),
-        'extract': ('[테스트] 베드 빼내기를 [시작=9]번부터 [층=3]: 그 번호 좌표 -> ... -> 11번 -> 수령대 선택 -> 복귀. 베드판을 잡고 있는 상태에서 시작',
-                    lambda a: extract_from(motions,
-                                           int(a[0]) if len(a) > 0 else 9,
-                                           int(a[1]) if len(a) > 1 else 3)),
+        'peek': ('[가상 확인] 빼내기 위치만 보고 진입전2로 복귀: [층=전부(3->2->1)]. 진입전2에서 시작, 언로드 진입/잡기 안 함',
+                 lambda a: peek_extract(motions, int(a[0]) if a else None)),
         'back': ('지금 단계에서 [N=1]번 단계까지 한 단계씩 거꾸로 되돌아감 (Enter=진행, q=멈춤)',
                  lambda a: back_steps(motions, int(a[0]) if a else 1)),
         'where': ('지금 로봇이 있는 단계 번호 확인',
