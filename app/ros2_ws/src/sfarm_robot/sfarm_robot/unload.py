@@ -9,6 +9,7 @@
   ros2 run sfarm_robot unload step 1     # 바로 실행: 1번 좌표(홈)로 이동
   ros2 run sfarm_robot unload run        # 한 단계씩 (Enter 진행 / b 전 단계 / g 잡기 / r 놓기 / q 멈춤). 진입전2에서 언로드 층 3/2/1 선택
   ros2 run sfarm_robot unload peek [층]   # [가상 확인] 진입전2에서 빼내기 위치(2-3 -> 2-2 -> 2-1)만 보고 돌아옴
+  ros2 run sfarm_robot unload recv [수령대]  # [테스트] 수령대 선택부터 시작 (step 15 후, 수령대 이동 -> 복귀까지)
   ros2 run sfarm_robot unload back       # 지금 단계에서 한 단계씩 거꾸로 (back 3 = 3번까지만)
   ros2 run sfarm_robot unload pose      # 현재 위치 좌표 출력
 
@@ -133,7 +134,7 @@ def extract_after_grab(motions, layer: int) -> bool:
     return True
 
 
-def deliver_and_return(motions, last_name: str, last_j) -> None:
+def deliver_and_return(motions, last_name: str, last_j, first: int | None = None) -> None:
     """수령대 1/2 선택 -> -1, -2 이동 -> 그리퍼 열기 -> 복귀 경로 (복귀1 -> 진입전2 -> 복귀3 -> 홈).
 
     테스트용: 수령대로 가는 도중이나 도착한 뒤(그리퍼 열기 전)에 b를 누르면
@@ -146,7 +147,11 @@ def deliver_and_return(motions, last_name: str, last_j) -> None:
     opts = '/'.join(str(k) for k in sorted(recv))
     while True:
         # 로봇은 지금 11번(선택 전 위치)에 있다
-        ans = input(f'  갈 수령대 ({opts}) 입력 (g=잡기, r=놓기, q=멈춤) ').strip().lower()
+        if first is not None:
+            ans, first = str(first), None   # 처음 한 번은 미리 고른 수령대 (b로 돌아오면 다시 물어봄)
+            print(f'  수령대 {ans} 선택')
+        else:
+            ans = input(f'  갈 수령대 ({opts}) 입력 (g=잡기, r=놓기, q=멈춤) ').strip().lower()
         if ans == 'q':
             print('  수령대 앞에서 멈춤 (베드판 잡은 상태)')
             return
@@ -195,7 +200,8 @@ def deliver_and_return(motions, last_name: str, last_j) -> None:
             if a == 'q':
                 print(f'  {name} 앞에서 멈춤')
                 return
-            motions.unload_move_j(name, jj, log=print)
+            vs, as_ = getattr(p, 'UNLOAD_SLOW_MOVES', {}).get(name, (1.0, 1.0))   # 복귀3 등은 천천히
+            motions.unload_move_j(name, jj, log=print, vel_scale=vs, acc_scale=as_)
         print(f'  [완료] 수령대{ans} 전달 후 홈 복귀')
         return
 
@@ -342,6 +348,24 @@ def peek_extract(motions, layer: int | None = None) -> None:
             return
 
 
+def recv_from_select(motions, station: int | None = None) -> None:
+    """[테스트] 수령대 선택부터 바로 시작: 수령대 이동 -> 그리퍼 열기 -> 복귀. 앞의 빼내기/올려놓기는 하지 않는다.
+
+    베드판을 잡고 수령대 선택 전(UNLOAD_PLACE_STEPS 마지막 번호) 위치에 있는 상태에서 시작한다.
+    station을 주면 그 수령대를 바로 고른 것으로 하고, 안 주면 선택 프롬프트가 나온다.
+    수령대로 가는 중 / 도착 후에 b = 수령대 선택 전 위치로 돌아와 다시 선택."""
+    p = motions.unload_poses
+    sel = p.UNLOAD_PLACE_STEPS[-1]
+    name, j = p.UNLOAD_J[sel]
+    if current_step(motions) != sel:
+        ans = input(f'  지금 위치가 {sel}번 {name}이(가) 아님 -> 그래도 진행? (Enter=진행, q=멈춤. 먼저 `step {sel}`로 가는 것을 권장) ').strip().lower()
+        if ans == 'q':
+            return
+    if station is not None and station not in p.UNLOAD_RECV_J:
+        raise ValueError(f'수령대 {station} 없음 (가능: {sorted(p.UNLOAD_RECV_J)})')
+    deliver_and_return(motions, name, j, first=station)
+
+
 STEP_MATCH_TOL_DEG = 3.0   # 현재 관절각이 좌표와 이 값 이내면 '그 단계에 있음'으로 본다
 
 
@@ -435,6 +459,8 @@ def build_commands(motions):
                                     int(a[1]) if len(a) > 1 else None)),
         'peek': ('[가상 확인] 빼내기 위치만 보고 진입전2로 복귀: [층=전부(3->2->1)]. 진입전2에서 시작, 언로드 진입/잡기 안 함',
                  lambda a: peek_extract(motions, int(a[0]) if a else None)),
+        'recv': ('[테스트] 수령대 선택부터 시작: [수령대=선택 프롬프트] 수령대 이동 -> 그리퍼 열기 -> 복귀. 베드판 잡고 15번 위치에서 시작 (`step 15` 후)',
+                 lambda a: recv_from_select(motions, int(a[0]) if a else None)),
         'back': ('지금 단계에서 [N=1]번 단계까지 한 단계씩 거꾸로 되돌아감 (Enter=진행, q=멈춤)',
                  lambda a: back_steps(motions, int(a[0]) if a else 1)),
         'where': ('지금 로봇이 있는 단계 번호 확인',
