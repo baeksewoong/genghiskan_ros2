@@ -17,6 +17,11 @@ setup(
     maintainer_email='20211270@vision.hoseo.edu',
     description='3Farm Doosan robot action server (/sfarm/insert, /sfarm/eject)',
     license='MIT',
+    extras_require={
+        'test': [
+            'pytest',
+        ],
+    },
     entry_points={
         'console_scripts': [
             'robot_action_server = sfarm_robot.robot_action_server:main',
