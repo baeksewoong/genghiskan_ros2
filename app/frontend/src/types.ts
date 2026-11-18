@@ -26,6 +26,7 @@ export interface BoardStockSlot {
 export interface Order {
   id: number;
   user_id: number;
+  customer_name: string | null;
   shape: Shape;
   print_duration_sec: number;
   status: OrderStatus;
@@ -44,6 +45,7 @@ export interface Printer {
   slot: number;
   status: PrinterStatus;
   current_order_id: number | null;
+  customer_name: string | null;
   timer_ends_at: string | null;
   updated_at: string;
 }
@@ -55,8 +57,6 @@ export interface RobotStatus {
 }
 
 export interface SimulatorSettings {
-  running: boolean;
-  interval_sec: number;
   time_scale: number;
 }
 
@@ -74,4 +74,20 @@ export interface Envelope<T = unknown> {
   event_id: string;
   ts: string;
   data: T;
+}
+
+// SQS 모니터링 페이지 전용.
+export interface SqsQueueStatus {
+  name: string;
+  configured: boolean;
+  queue_url: string | null;
+  visible?: number;
+  in_flight?: number;
+  delayed?: number;
+  error?: string;
+}
+
+export interface SqsStatus {
+  command_queue: SqsQueueStatus;
+  event_queue: SqsQueueStatus;
 }

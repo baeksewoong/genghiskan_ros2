@@ -18,7 +18,7 @@ SHAPE_PRINT_DURATION_SEC: dict[Shape, int] = {
 
 class OrderStatus(str, Enum):
     WAITING = "WAITING"
-    # 작업요청(SQS) 경로 전용: LOAD 명령 발행 성공 ~ pick_complete 수신 전까지 ("투입중").
+    # 작업요청(SQS) 경로 전용: LOAD 명령 발행 성공 ~ success_load1 수신 전까지 ("투입중").
     # PRD: assets/docs/prd-work-request-sqs.md 5장.
     DISPATCHING = "DISPATCHING"
     LOADING = "LOADING"
@@ -32,6 +32,11 @@ class OrderStatus(str, Enum):
 class OrderSource(str, Enum):
     AUTO = "AUTO"
     MANUAL = "MANUAL"
+    # 작업요청(SQS) 경로 전용 (WorkRequestService). 가상 로봇(/ws/bridge) 경로의
+    # DispatcherService가 이 주문을 주워가지 않도록 MANUAL과 구분한다 — 그렇지 않으면
+    # board_stock이 비어 WAITING으로 남은 작업요청 주문을, 가상 로봇 DispatcherService가
+    # (board 체크 없이) 빈 프린터만 보고 멋대로 집어가 가상 로봇으로 완료시켜 버린다.
+    WORK_REQUEST = "WORK_REQUEST"
 
 
 class PrinterStatus(str, Enum):
@@ -75,6 +80,8 @@ class EventDirection(str, Enum):
 class AlertReason(str, Enum):
     # 작업요청(SQS) 경로 전용 (PRD: assets/docs/prd-work-request-sqs.md 5장 "채우기 완료" 버튼).
     BOARD_STOCK_EMPTY = "BOARD_STOCK_EMPTY"
+    # robot-events에서 베드 집기 실패 이벤트(예: {"work_id":1,"type":"fail_load1"})를 받았을 때.
+    LOAD_PICK_FAILED = "LOAD_PICK_FAILED"
 
 
 class BoardStockStatus(str, Enum):

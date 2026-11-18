@@ -1,1 +1,0 @@
-/home/rokey/workspace/genghiskan_ros2/app/ros2_ws/src/build/sfarm_interfaces/rosidl_typesupport_fastrtps_c/sfarm_interfaces/action/detail/eject__rosidl_typesupport_fastrtps_c.h

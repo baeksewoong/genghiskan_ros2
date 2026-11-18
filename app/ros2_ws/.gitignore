@@ -1,0 +1,12 @@
+# colcon build artifacts (어디서 생성되든 — src/ 안에 잘못 생겨도 무시)
+build/
+install/
+log/
+
+# Python bytecode / packaging
+__pycache__/
+*.pyc
+*.egg-info/
+
+# test artifacts
+.pytest_cache/

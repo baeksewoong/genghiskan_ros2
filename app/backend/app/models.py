@@ -39,7 +39,7 @@ class Order(Base):
     status: Mapped[OrderStatus] = mapped_column(
         SAEnum(OrderStatus, native_enum=True, length=20), default=OrderStatus.WAITING
     )
-    source: Mapped[OrderSource] = mapped_column(SAEnum(OrderSource, native_enum=True, length=8))
+    source: Mapped[OrderSource] = mapped_column(SAEnum(OrderSource, native_enum=True, length=12))
     printer_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
@@ -70,7 +70,9 @@ class RobotTask(Base):
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("orders.id"))
     type: Mapped[TaskType] = mapped_column(SAEnum(TaskType, native_enum=True, length=8))
-    printer_slot: Mapped[int] = mapped_column(SmallInteger)
+    # 작업요청(SQS) 경로: dispatch 시점엔 프린터를 모른다 — success_load1 수신 시점에
+    # 비로소 정해진다 (그 전까지는 NULL).
+    printer_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         SAEnum(TaskStatus, native_enum=True, length=16), default=TaskStatus.DISPATCHED
     )

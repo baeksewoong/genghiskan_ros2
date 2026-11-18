@@ -1,7 +1,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import ACTIVE_ORDER_STATUSES, OrderStatus
+from app.enums import ACTIVE_ORDER_STATUSES, OrderSource, OrderStatus
 from app.models import Order
 from app.repositories.base import lock_for_update
 
@@ -55,7 +55,15 @@ class OrderRepository:
 
     @staticmethod
     async def oldest_waiting_locked(session: AsyncSession) -> Order | None:
-        stmt = select(Order).where(Order.status == OrderStatus.WAITING).order_by(Order.created_at)
+        """가상 로봇(/ws/bridge) 경로의 DispatcherService 전용. 작업요청(SQS) 경로
+        (source=WORK_REQUEST) 주문은 제외한다 — 그 경로가 board_stock 부족/빈 프린터
+        없음으로 WAITING에 남겨둔 주문을 여기서 board 체크 없이 집어가 버리면, SQS로
+        가야 할 주문이 가상 로봇으로 완료돼 버린다."""
+        stmt = (
+            select(Order)
+            .where(Order.status == OrderStatus.WAITING, Order.source != OrderSource.WORK_REQUEST)
+            .order_by(Order.created_at)
+        )
         return (await session.execute(lock_for_update(stmt, session))).scalars().first()
 
     @staticmethod
