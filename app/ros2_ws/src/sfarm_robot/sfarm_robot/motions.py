@@ -27,6 +27,7 @@ from DSR_ROBOT2 import (
     OFF,
     ON,
     align_axis,
+    fkin,
     get_current_posj,
     get_current_posx,
     get_tool_force,
@@ -40,7 +41,7 @@ from DSR_ROBOT2 import (
 
 from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
 
-from . import poses
+from . import poses, unload_poses
 
 # ---------------------------------------------------------------- 속도
 VELJ, ACCJ = 30.0, 30.0      # 관절 이동 (movej)
@@ -101,6 +102,9 @@ PRE_INSERT_HOLD_SEC = 3.0      # sd 다음 첫 점(SD_PRE_INSERT)에서 멈추�
 # ---------------------------------------------------------------- 작업대에서 판재 꺼내기 (Unload1)
 UNLOAD_VELJ, UNLOAD_ACCJ = 22.5, 22.5
 UNLOAD_VELX, UNLOAD_ACCX = 67.5, 67.5
+# 잡은 뒤 이동(베드 빼내기 7~11번 / 수령대 / 복귀)을 movel(직선)로 할지. False면 예전처럼 movej.
+#   좌표는 posj로 저장돼 있어서 movel 때는 fkin으로 posx로 바꿔서 간다.
+UNLOAD_USE_MOVEL = True
 UNLOAD_ARRIVE_WAIT_SEC = 1.0        # 언로드 층 도착 후 잡기 전 대기 (s)
 UNLOAD_SETTLE_SEC = 1.0             # 그리퍼 닫은 뒤 / 위치 이동 후 힘 측정 전 대기 (s)
 UNLOAD_PULL_POS_MM = 160.0          # 위치 제어로 당기는 거리 (-X, mm)
@@ -600,24 +604,38 @@ def run_load2(goal: Load2.Goal, log=print) -> bool:
     return True
 
 
-def unload_move_step(n: int, log=print) -> None:
-    """UNLOAD_J[n] 좌표로 관절 이동."""
-    table = poses.UNLOAD_J
+def unload_move_step(n: int, log=print, linear: bool = False) -> None:
+    """UNLOAD_J[n] 좌표로 이동. linear=True면 movel(직선), 아니면 movej(관절)."""
+    table = unload_poses.UNLOAD_J
     if n not in table:
         raise ValueError(f'{n}번 좌표 없음 (가능: {sorted(table)})')
     name, j = table[n]
-    log(f'  [{n}] {name}: posj={j}  (vel={UNLOAD_VELJ} acc={UNLOAD_ACCJ})')
-    movej(posj(*j), vel=UNLOAD_VELJ, acc=UNLOAD_ACCJ)
+    unload_move_j(f'[{n}] {name}', j, log=log, linear=linear)
+
+
+def unload_move_j(name: str, j, log=print, linear: bool | None = None) -> None:
+    """이름 붙은 posj 좌표로 이동 (베드 빼내기 / 수령대 / 복귀용).
+
+    linear가 None이면 UNLOAD_USE_MOVEL을 따른다. movel은 posj를 fkin으로 posx로 바꿔서 직선 이동."""
+    if linear is None:
+        linear = UNLOAD_USE_MOVEL
+    if linear:
+        x = fkin(posj(*j), ref=DR_BASE)
+        log(f'  {name}: movel posj={list(j)} -> posx={[round(float(v), 2) for v in x]}  (vel={UNLOAD_VELX} acc={UNLOAD_ACCX})')
+        movel(x, vel=UNLOAD_VELX, acc=UNLOAD_ACCX)
+    else:
+        log(f'  {name}: movej posj={list(j)}  (vel={UNLOAD_VELJ} acc={UNLOAD_ACCJ})')
+        movej(posj(*j), vel=UNLOAD_VELJ, acc=UNLOAD_ACCJ)
 
 
 def unload_move_pre(layer: int, log=print) -> None:
     """언로드 layer층 진입전 좌표로 관절 이동 (없거나 진입전2와 같으면 생략)."""
-    pre = getattr(poses, 'UNLOAD_PRE_J', {}).get(layer)
+    pre = getattr(unload_poses, 'UNLOAD_PRE_J', {}).get(layer)
     if pre is None:
         return
     name, j = pre
-    frm = getattr(poses, 'UNLOAD_BRANCH_FROM', None)
-    if frm in poses.UNLOAD_J and list(j) == list(poses.UNLOAD_J[frm][1]):
+    frm = getattr(unload_poses, 'UNLOAD_BRANCH_FROM', None)
+    if frm in unload_poses.UNLOAD_J and list(j) == list(unload_poses.UNLOAD_J[frm][1]):
         log(f'  {name}: 진입전2와 같은 좌표 -> 이동 생략')
         return
     log(f'  {name}: posj={j}  (vel={UNLOAD_VELJ} acc={UNLOAD_ACCJ})')
@@ -627,13 +645,13 @@ def unload_move_pre(layer: int, log=print) -> None:
 def unload_enter_layer(layer: int, log=print) -> None:
     """진입전2 -> (층 진입전) -> 언로드 layer층."""
     unload_move_pre(layer, log=log)
-    unload_move_step(poses.UNLOAD_LAYER_STEP[layer], log=log)
+    unload_move_step(unload_poses.UNLOAD_LAYER_STEP[layer], log=log)
 
 
 def unload_leave_layer(layer: int, log=print) -> None:
     """언로드 layer층 -> (층 진입전) -> 진입전2."""
     unload_move_pre(layer, log=log)
-    unload_move_step(poses.UNLOAD_BRANCH_FROM, log=log)
+    unload_move_step(unload_poses.UNLOAD_BRANCH_FROM, log=log)
 
 
 def unload_grab_pull(layer: int, log=print) -> bool:
@@ -701,9 +719,9 @@ def run_unload1(goal: Unload1.Goal, log=print) -> bool:
     좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
     """
     layer = goal.sd_pos_id
-    table = getattr(poses, 'UNLOAD_J', {})
-    layers = getattr(poses, 'UNLOAD_LAYER_STEP', {})
-    frm = getattr(poses, 'UNLOAD_BRANCH_FROM', None)
+    table = getattr(unload_poses, 'UNLOAD_J', {})
+    layers = getattr(unload_poses, 'UNLOAD_LAYER_STEP', {})
+    frm = getattr(unload_poses, 'UNLOAD_BRANCH_FROM', None)
     if layer not in layers:
         raise ValueError(f'UNLOAD_LAYER_STEP에 {layer}층 없음 (가능: {sorted(layers)})')
     if frm not in table:

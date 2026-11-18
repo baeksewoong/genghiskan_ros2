@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'robot_action_server = sfarm_robot.robot_action_server:main',
             'motion_test = sfarm_robot.motion_test:main',
+            'unload = sfarm_robot.unload:main',
         ],
     },
 )
