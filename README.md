@@ -95,21 +95,19 @@
 ├── backend/                  # FastAPI 서버
 │   ├── app/
 │   │   ├── api/              # REST 라우터 (orders, inventory, simulator, debug)
-│   │   ├── ws/               # /ws/client, /ws/bridge WebSocket
+│   │   ├── ws/               # /ws/client WebSocket
 │   │   ├── dispatcher/       # 작업 우선순위 판단, 로봇 작업 전송
 │   │   ├── timers/           # 프린터·수령 타이머, 재시작 복원
 │   │   ├── simulator/        # 45초 자동 주문 생성
 │   │   └── models/           # SQLAlchemy 모델
 │   └── alembic/              # DB 마이그레이션
 ├── frontend/                 # React + TypeScript + Vite, 2D 업장 화면
-├── virtual_robot/            # 가상 로봇 (단계별 지연, 장애 주입)
-│   └── config/phases.yaml    # 단계별 작업 시간 설정
 ├── ros2_ws/src/              # (다음 단계)
 │   ├── printshop_interfaces/ # 커스텀 action / msg (ExecuteTask, RobotState)
 │   ├── printshop_bridge/     # 서버 ↔ ROS 2 브릿지 노드
 │   └── printshop_executor/   # DSR 기반 LOAD/UNLOAD 작업 실행 노드
 ├── docs/PRD.md
-└── docker-compose.yml        # mysql, backend, virtual-robot
+└── docker-compose.yml        # mysql, backend
 ```
 
 </details>
@@ -130,7 +128,7 @@
 | RETURN_HOME | 3 | 3 |
 | **합계** | **14~16** | **15~17** |
 
-층 보정: 1층 0초, 2층 +1초, 3층 +2초. 실제 로봇 측정 후 `virtual_robot/config/phases.yaml`에서 보정합니다.
+층 보정: 1층 0초, 2층 +1초, 3층 +2초.
 
 </details>
 
@@ -148,7 +146,7 @@
 
 ### 웹 빌드 & 실행
 
-실제 구현은 `app/` 아래 있습니다 (`app/backend`, `app/virtual-robot`, `app/frontend`). 처음 클론한 뒤
+실제 구현은 `app/` 아래 있습니다 (`app/backend`, `app/frontend`, `app/ros2_ws`). 처음 클론한 뒤
 아래 스크립트 두 개로 실행할 수 있습니다 (자세한 설명·수동 실행 방법은 [`app/README.md`](app/README.md) 참고).
 
 ```bash
@@ -159,7 +157,7 @@ cd <repo>/app
 # 2. 최초 1회 설정 (venv/npm install, .env 생성, MySQL(Docker) 기동, DB 스키마 생성)
 ./scripts/setup.sh
 
-# 3. 이후 매번 이것만 실행 (Docker 컨테이너 안 떠있으면 기동 + 백엔드·가상로봇·프론트엔드 실행)
+# 3. 이후 매번 이것만 실행 (Docker 컨테이너 안 떠있으면 기동 + 백엔드·프론트엔드 실행)
 ./scripts/run.sh
 ```
 

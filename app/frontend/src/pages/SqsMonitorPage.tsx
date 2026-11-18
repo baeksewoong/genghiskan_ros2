@@ -1,40 +1,12 @@
 import { useEffect, useState } from "react";
-import { Pill } from "../components/atoms/Pill";
+import { QueueStatusCard } from "../components/organisms/QueueStatusCard";
+import { SqsLogPanel } from "../components/organisms/SqsLogPanel";
+import { SqsMonitorTemplate } from "../components/templates/SqsMonitorTemplate";
 import { summarize, useLiveState, type LogEntry } from "../hooks/useLiveState";
 import { api } from "../lib/api";
-import type { SqsQueueStatus, SqsStatus } from "../types";
+import type { SqsStatus } from "../types";
 
 const POLL_INTERVAL_MS = 3000;
-
-function QueueStatusCard({ title, status }: { title: string; status: SqsQueueStatus | null }) {
-  return (
-    <section className="panel">
-      <h2>{title}</h2>
-      {!status ? (
-        <p>불러오는 중...</p>
-      ) : !status.configured ? (
-        <Pill variant="bad">큐 미설정</Pill>
-      ) : status.error ? (
-        <Pill variant="bad">조회 실패: {status.error}</Pill>
-      ) : (
-        <div className="sqs-counts">
-          <div>
-            <span className="sqs-count-value">{status.visible}</span>
-            <span className="sqs-count-label">대기중</span>
-          </div>
-          <div>
-            <span className="sqs-count-value">{status.in_flight}</span>
-            <span className="sqs-count-label">처리중(invisible)</span>
-          </div>
-          <div>
-            <span className="sqs-count-value">{status.delayed}</span>
-            <span className="sqs-count-label">지연</span>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
 
 export function SqsMonitorPage() {
   const { sqsLog } = useLiveState();
@@ -89,37 +61,12 @@ export function SqsMonitorPage() {
   const combinedLog = [...sqsLog, ...history.filter((entry) => !liveIds.has(entry.id))];
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <h1>SQS 모니터링</h1>
-      </header>
-
-      <main className="layout">
-        <QueueStatusCard title="robot-commands (발행)" status={status?.command_queue ?? null} />
-        <QueueStatusCard title="robot-events (수신)" status={status?.event_queue ?? null} />
-      </main>
-
-      {statusError && <p className="sqs-status-error">큐 상태 조회 실패: {statusError}</p>}
-      {historyError && <p className="sqs-status-error">히스토리 조회 실패: {historyError}</p>}
-
-      <section className="panel sqs-log">
-        <h2>메시지 로그 ({combinedLog.length})</h2>
-        {combinedLog.length === 0 ? (
-          <p>아직 수신/발행된 메시지가 없습니다.</p>
-        ) : (
-          <ul>
-            {combinedLog.map((entry) => (
-              <li key={entry.id}>
-                <div>
-                  <span className="log-ts">{entry.ts}</span>
-                  {entry.summary}
-                </div>
-                <pre className="sqs-log-body">{JSON.stringify(entry.data, null, 2)}</pre>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
+    <SqsMonitorTemplate
+      commandQueue={<QueueStatusCard title="robot-commands (발행)" status={status?.command_queue ?? null} />}
+      eventQueue={<QueueStatusCard title="robot-events (수신)" status={status?.event_queue ?? null} />}
+      statusError={statusError && <p className="sqs-status-error">큐 상태 조회 실패: {statusError}</p>}
+      historyError={historyError && <p className="sqs-status-error">히스토리 조회 실패: {historyError}</p>}
+      log={<SqsLogPanel log={combinedLog} />}
+    />
   );
 }

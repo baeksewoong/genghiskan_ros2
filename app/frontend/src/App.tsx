@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { NavSidebar } from "./components/organisms/NavSidebar";
 import { DashboardPage } from "./pages/DashboardPage";
 import { SqsMonitorPage } from "./pages/SqsMonitorPage";
+import { TeachingPendantPage } from "./pages/TeachingPendantPage";
 
 const ROUTES = [
   { path: "#/", label: "home" },
   { path: "#/sqs-monitor", label: "SQS 모니터링" },
+  { path: "#/teaching-pendant", label: "티칭 팬던트" },
 ];
 
 function normalizeHash(hash: string): string {
@@ -21,7 +23,14 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  const page = hash === "#/sqs-monitor" ? <SqsMonitorPage /> : <DashboardPage />;
+  const page =
+    hash === "#/sqs-monitor" ? (
+      <SqsMonitorPage />
+    ) : hash === "#/teaching-pendant" ? (
+      <TeachingPendantPage />
+    ) : (
+      <DashboardPage />
+    );
 
   return (
     <div className="app-shell">
