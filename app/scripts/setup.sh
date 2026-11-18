@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 최초 1회 설정 스크립트.
-# - 백엔드/가상로봇 Python venv 생성 + 패키지 설치
+# - 백엔드 Python venv 생성 + 패키지 설치
 # - 프론트엔드 npm 패키지 설치
 # - .env 파일 생성 (.env.example 복사)
 # - MySQL(Docker) 기동 + alembic upgrade head 로 스키마 생성
@@ -52,9 +52,8 @@ setup_python_component() {
   ensure_env_file "$dir"
 }
 
-log "백엔드/가상로봇 Python 환경을 준비합니다 (처음 실행 시 몇 분 걸릴 수 있습니다)"
+log "백엔드 Python 환경을 준비합니다 (처음 실행 시 몇 분 걸릴 수 있습니다)"
 setup_python_component "$APP_DIR/backend"
-setup_python_component "$APP_DIR/virtual-robot"
 
 log "프론트엔드 패키지를 설치합니다 (npm install)"
 (cd "$APP_DIR/frontend" && npm install)

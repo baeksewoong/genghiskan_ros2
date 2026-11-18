@@ -1,13 +1,11 @@
 import { Button } from "../atoms/Button";
 import { Pill } from "../atoms/Pill";
 import { ConnectionStatus } from "../molecules/ConnectionStatus";
-import type { RobotState, TeachingPendantPose } from "../../types";
+import type { TeachingPendantPose } from "../../types";
 import type { TeachingPendantErrorInfo } from "../../hooks/useLiveState";
 
 interface RobotPoseStatusPanelProps {
   wsConnected: boolean;
-  bridgeConnected: boolean;
-  robotState: RobotState;
   enabled: boolean;
   owner: string | null;
   currentPose: TeachingPendantPose | null;
@@ -26,8 +24,6 @@ function formatPose(pose: TeachingPendantPose): string {
  * pending이 자동으로 풀리지 않는 에러는 "확인"을 눌러야 버튼이 다시 활성화된다. */
 export function RobotPoseStatusPanel({
   wsConnected,
-  bridgeConnected,
-  robotState,
   enabled,
   owner,
   currentPose,
@@ -37,7 +33,7 @@ export function RobotPoseStatusPanel({
   return (
     <section className="panel tp-status-panel">
       <h2>로봇 상태 / 현재 위치</h2>
-      <ConnectionStatus wsConnected={wsConnected} bridgeConnected={bridgeConnected} robotState={robotState} />
+      <ConnectionStatus wsConnected={wsConnected} />
       <p className="tp-session-state">
         조그 세션:{" "}
         <Pill variant={enabled ? "ok" : "neutral"}>

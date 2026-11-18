@@ -2,22 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
-from app.enums import OrderSource, OrderStatus
-from app.schemas import OrderCreateRequest, OrderOut
+from app.enums import OrderStatus
+from app.schemas import OrderOut
 from app.services.order_presenter import build_order_out
 from app.services.order_service import OrderNotPickupableError, OrderService
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
-
-
-@router.post("", response_model=OrderOut, status_code=201)
-async def create_manual_order(
-    req: OrderCreateRequest, session: AsyncSession = Depends(get_session)
-) -> OrderOut:
-    order = await OrderService.create_order(
-        session, req.shape, OrderSource.MANUAL, customer_name=req.customer_name
-    )
-    return await build_order_out(session, order)
 
 
 @router.get("", response_model=list[OrderOut])

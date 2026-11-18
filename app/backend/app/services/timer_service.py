@@ -1,16 +1,12 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web
-from app.core.runtime import runtime
-from app.enums import RobotState
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
-from app.repositories.robot_task_repository import RobotTaskRepository
-from app.services.dispatcher_service import DispatcherService
 from app.services.order_presenter import build_order_out
 from app.services.printer_presenter import build_printer_out
 from app.services.sqs_producer_service import SqsProducerService
@@ -19,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class TimerService:
-    """출력 타이머·수령 타이머·작업 타임아웃을 주기적으로 점검한다 (PRD 3장, 9.5).
+    """출력 타이머를 주기적으로 점검해, 끝난 출력은 PRINT_DONE으로 바꾸고 unload1을 보낸다.
 
     DB의 timer_ends_at을 매 틱마다 그대로 읽어 판정하므로, 서버가 재시작돼도
     별도 복원 로직 없이 자연히 복구된다."""
@@ -37,13 +33,9 @@ class TimerService:
                 order.mark_print_done(now)
                 printer.mark_done(now)
 
-                # 작업요청(SQS) 경로로 디스패치된 주문(LOAD 작업에 start_pos_id가 있음)만
-                # robot-commands에 unload1을 보낸다 — 가상 로봇(/ws/bridge) 경로는 그
-                # 자체 UNLOAD 디스패치(DispatcherService)를 그대로 쓴다.
-                load_task = await RobotTaskRepository.get_load_task_for_order(session, order.id)
-                if load_task is not None and load_task.start_pos_id is not None:
-                    # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
-                    await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=3)
+                # 출력이 끝나면 robot-commands에 unload1(프린터에서 완성품 꺼내기)을 보낸다.
+                # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
+                await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=3)
 
                 await broadcast_to_web(
                     session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
@@ -56,30 +48,11 @@ class TimerService:
         return changed
 
     @staticmethod
-    async def _sweep_task_timeouts() -> None:
-        """디스패치 후 응답 없는 작업을 타임아웃 처리한다 (운영자 확인 후 수동 복구)."""
-        now = datetime.utcnow()
-        deadline = now - timedelta(seconds=settings.task_timeout_sec)
-        async with AsyncSessionLocal() as session:
-            tasks = await RobotTaskRepository.get_timed_out(session, deadline)
-            for task in tasks:
-                task.mark_failed(now, "TIMEOUT")
-                await broadcast_to_web(
-                    session, "robot.state", {"state": RobotState.ERROR.value, "current_task_id": task.id}
-                )
-            if tasks:
-                await session.commit()
-                runtime.robot_state = RobotState.ERROR
-
-    @staticmethod
     async def sweep_loop() -> None:
         while True:
             await asyncio.sleep(settings.timer_sweep_interval_sec)
             try:
-                print_changed = await TimerService._sweep_print_timers()
-                await TimerService._sweep_task_timeouts()
-                if print_changed:
-                    await DispatcherService.run_cycle()
+                await TimerService._sweep_print_timers()
             except Exception:
                 # 한 사이클의 오류가 스윕 루프 전체를 멈추지 않도록 한다.
                 logger.exception("timer sweep cycle failed")

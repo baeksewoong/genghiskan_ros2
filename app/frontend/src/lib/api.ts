@@ -1,5 +1,6 @@
 import type {
   BoardStockSlot,
+  ReceivePos,
   Envelope,
   GripperAction,
   JogAxis,
@@ -8,7 +9,6 @@ import type {
   JogSpace,
   Order,
   Shape,
-  SimulatorSettings,
   SqsStatus,
   StateSnapshot,
   TeachingPendantPose,
@@ -59,6 +59,15 @@ async function createWorkRequest(customerName: string, shape: Shape): Promise<Or
 
 async function retryLoad(workId: number): Promise<void> {
   const res = await fetch(`/api/work-requests/${workId}/retry-load`, { method: "POST" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = body?.detail as { error_code?: string; message?: string } | undefined;
+    throw new WorkRequestError(detail?.message ?? `재시도 실패: ${res.status}`, detail?.error_code);
+  }
+}
+
+async function retryUnload(workId: number): Promise<void> {
+  const res = await fetch(`/api/work-requests/${workId}/retry-unload`, { method: "POST" });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = body?.detail as { error_code?: string; message?: string } | undefined;
@@ -121,33 +130,14 @@ interface JogRequestBody {
 export const api = {
   getState: () => request<StateSnapshot>("/api/state"),
 
-  createOrder: (customerName: string, shape: Shape) =>
-    request<Order>("/api/orders", {
-      method: "POST",
-      body: JSON.stringify({ shape, customer_name: customerName || null }),
-    }),
-
   // 작업요청(SQS) 경로 전용 (PRD: assets/docs/prd-work-request-sqs.md).
   createWorkRequest,
 
   getBoardStock: () => request<BoardStockSlot[]>("/api/board-stock"),
+  getReceivePos: () => request<ReceivePos[]>("/api/receive-pos"),
 
   refillBoardStockComplete: () =>
     request<BoardStockSlot[]>("/api/board-stock/refill-complete", { method: "POST" }),
-
-  getSimulator: () => request<SimulatorSettings>("/api/simulator"),
-
-  patchSimulator: (patch: Partial<SimulatorSettings>) =>
-    request<SimulatorSettings>("/api/simulator", {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    }),
-
-  setDebugFault: (kind: "NO_BOARD" | "GRIP_FAIL") =>
-    request("/api/debug/faults", {
-      method: "PATCH",
-      body: JSON.stringify({ kind, once: true }),
-    }),
 
   // SQS 모니터링 페이지 전용: 큐 깊이(ApproximateNumberOfMessages 등)만 조회한다.
   getSqsStatus: () => request<SqsStatus>("/api/sqs/status"),
@@ -158,6 +148,7 @@ export const api = {
 
   // 베드 집기 실패 알럿("확인") 전용: 같은 work_id로 LOAD 명령을 SQS에 재전송한다.
   retryLoad,
+  retryUnload,
 
   // 수령대 "수령하기" 버튼 전용: 눌렀을 때만 주문을 수령대에서 내린다.
   pickUpOrder,

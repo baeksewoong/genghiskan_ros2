@@ -1,8 +1,6 @@
-"""작업요청(SQS 디스패치) 1건 처리. 기존 가상 로봇 경로(OrderService,
-DispatcherService, board_inventory)와는 완전히 분리된 신규 경로다
-(PRD: assets/docs/prd-work-request-sqs.md). 이 경로는 요청 하나를 받을 때마다
-그 자리에서 즉시 베드를 확인해 판정한다 — 기존 DispatcherService처럼 로봇이
-IDLE이 될 때마다 재평가하는 루프가 아니다.
+"""작업요청(SQS 디스패치) 처리 — 주문이 만들어지는 유일한 경로다
+(PRD: assets/docs/prd-work-request-sqs.md). 요청 하나를 받을 때마다 그 자리에서
+즉시 베드를 확인해 판정한다.
 
 LOAD는 두 단계다: dispatch 시점엔 베드(start_pos_id)만 확인해서 집기 명령을 보내고,
 프린터는 아직 고르지 않는다. 로봇이 베드 집기에 성공(success_load1)했다고 보고하면
@@ -11,17 +9,19 @@ LOAD는 두 단계다: dispatch 시점엔 베드(start_pos_id)만 확인해서 �
 
 import logging
 import random
+import uuid
 from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
 from app.core.events import broadcast_to_web
-from app.enums import AlertReason, OrderSource, OrderStatus, PrinterStatus, Shape
+from app.enums import AlertReason, OrderStatus, PrinterStatus, Shape
 from app.models import Order, RobotTask
 from app.repositories.board_stock_repository import BoardStockRepository
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
+from app.repositories.receive_pos_repository import ReceivePosRepository
 from app.repositories.robot_task_repository import RobotTaskRepository
 from app.repositories.user_repository import UserRepository
 from app.services.order_presenter import build_order_out
@@ -41,6 +41,15 @@ class BoardEmptyError(Exception):
     def __init__(self, order_id: int):
         self.order_id = order_id
         super().__init__(f"board empty for order {order_id}")
+
+
+class UnloadRetryNotFoundError(Exception):
+    """완성품 집기 실패(fail_unload1) 알럿에서 "확인"을 눌렀는데, 재시도할 주문
+    (PRINT_DONE)을 찾을 수 없을 때."""
+
+    def __init__(self, work_id: int):
+        self.work_id = work_id
+        super().__init__(f"no unload1 to retry for work {work_id}")
 
 
 class SqsProduceError(Exception):
@@ -203,7 +212,7 @@ class WorkRequestService:
         """robot-events의 success_load2(프린터 배치 성공) 수신 처리: 주문을
         LOADING→PRINTING으로, 배정된 프린터를 RESERVED→PRINTING(타이머 시작)으로,
         LOAD 작업을 RUNNING→SUCCEEDED로 바꾼다. 그 뒤로는 기존 TimerService의
-        출력 타이머 스윕이 가상 로봇 경로와 동일하게 처리한다. 알 수 없는
+        출력 타이머 스윕이 처리한다. 알 수 없는
         work_id이거나 이미 처리된 경우(중복 수신)는 조용히 무시한다."""
         async with AsyncSessionLocal() as session:
             order = await OrderRepository.get_locked(session, work_id)
@@ -255,6 +264,152 @@ class WorkRequestService:
             await session.commit()
 
     @staticmethod
+    async def handle_unload1_success(work_id: int) -> bool:
+        """robot-events의 success_unload1(프린터에서 완성품 꺼내기 성공) 수신 처리.
+
+        1) 물리적 사실을 먼저 커밋한다: 주문 PRINT_DONE→UNLOADING, 프린터 DONE→EMPTY.
+           뒤이은 unload2 전송 성패와 무관하게 프린터는 이미 비었기 때문이다.
+        2) 비어있는 수령대(1번 우선, 1번이 차 있으면 2번)를 골라 unload2를 보낸다.
+           둘 다 차 있으면 웹에 알럿을 띄우고 대기한다 — 사람이 "수령하기"로 자리를
+           비우면 dispatch_pending_unload2가 자동으로 이어서 보낸다.
+
+        PRINT_DONE 주문이 아니면(알 수 없는 work_id, 중복 수신 등) 조용히 무시한다.
+        반환값: unload2 발행 성공 여부."""
+        async with AsyncSessionLocal() as session:
+            order = await OrderRepository.get_locked(session, work_id)
+            if order is None or order.status != OrderStatus.PRINT_DONE:
+                await session.rollback()
+                logger.warning("success_unload1 무시: PRINT_DONE 주문이 아님 (work_id=%s)", work_id)
+                return False
+
+            now = datetime.utcnow()
+            order.mark_unloading(now)
+            printer = (
+                await PrinterRepository.get_locked(session, order.printer_slot)
+                if order.printer_slot is not None
+                else None
+            )
+            if printer is not None and printer.current_order_id == order.id and printer.status == PrinterStatus.DONE:
+                printer.release_after_unload(now)
+            else:
+                printer = None
+            await session.flush()
+
+            await broadcast_to_web(
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+            )
+            if printer is not None:
+                await broadcast_to_web(
+                    session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
+                )
+            await session.commit()
+
+        return await WorkRequestService._dispatch_unload2(work_id, alert_if_full=True)
+
+    @staticmethod
+    async def dispatch_pending_unload2() -> bool:
+        """수령대 자리가 났을 때(“수령하기” 직후) 호출한다. 수령대가 가득 차서 대기 중인
+        주문(UNLOADING, receive_pos_id 없음)이 있으면 가장 오래 기다린 것부터 unload2를
+        보낸다. 대기 주문이 없으면 아무것도 하지 않는다. 반환값: 발행 여부."""
+        async with AsyncSessionLocal() as session:
+            order = await OrderRepository.oldest_waiting_receive_pos_locked(session)
+            work_id = order.id if order is not None else None
+            await session.rollback()
+        if work_id is None:
+            return False
+        return await WorkRequestService._dispatch_unload2(work_id, alert_if_full=False)
+
+    @staticmethod
+    async def _dispatch_unload2(work_id: int, *, alert_if_full: bool) -> bool:
+        """UNLOADING이면서 수령대 미배정인 주문에 빈 수령대를 배정하고 unload2를 보낸다.
+        수령대가 가득 차면 (alert_if_full일 때) 알럿을 띄우고 대기 상태로 둔다.
+        전송에 실패하면 배정을 롤백한다 — 대기 상태로 남아 다음 "수령하기" 때 재시도된다."""
+        async with AsyncSessionLocal() as session:
+            order = await OrderRepository.get_locked(session, work_id)
+            if order is None or order.status != OrderStatus.UNLOADING or order.receive_pos_id is not None:
+                await session.rollback()
+                return False
+
+            receive_pos = await ReceivePosRepository.first_empty_locked(session)
+            if receive_pos is None:
+                logger.warning("수령대가 모두 차 있어 unload2 대기 (work_id=%s)", work_id)
+                if alert_if_full:
+                    await broadcast_to_web(
+                        session,
+                        "alert.receive_pos_full",
+                        {"work_id": work_id, "reason": AlertReason.RECEIVE_POS_FULL.value},
+                    )
+                    await session.commit()
+                else:
+                    await session.rollback()
+                return False
+
+            receive_pos_id = receive_pos.pos_id
+            now = datetime.utcnow()
+            receive_pos.reserve(work_id, now)
+            order.assign_receive_pos(receive_pos_id, now)
+            await session.flush()
+
+            produced = await SqsProducerService.produce_unload2_command(
+                work_id=work_id, receive_pos_id=receive_pos_id
+            )
+            if not produced:
+                await session.rollback()
+                logger.error(
+                    "robot-commands unload2 명령 전송 실패 (work_id=%s, receive_pos_id=%s)", work_id, receive_pos_id
+                )
+                return False
+
+            await broadcast_to_web(
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+            )
+            await broadcast_to_web(
+                session, "receive_pos.updated", await WorkRequestService._receive_pos_snapshot(session)
+            )
+            # 수령대 가득 참 알럿이 떠 있었다면 닫는다 (해당 work_id에 한해 프론트가 처리).
+            await broadcast_to_web(session, "alert.receive_pos_full_cleared", {"work_id": work_id})
+            await session.commit()
+            return True
+
+    @staticmethod
+    async def handle_unload2_success(work_id: int) -> None:
+        """robot-events의 success_unload2(수령대에 완성품 내려놓기 성공) 수신 처리:
+        주문을 UNLOADING→READY_FOR_PICKUP으로, 수령대(receive_pos)를 RESERVED→OCCUPIED로
+        바꾼다. 수령대는 "수령하기"(PICKED_UP)를 누를 때까지 점유 상태로 남는다. 알 수 없는
+        work_id이거나 이미 처리된 경우(중복 수신)는 조용히 무시한다."""
+        async with AsyncSessionLocal() as session:
+            order = await OrderRepository.get_locked(session, work_id)
+            if order is None or order.status != OrderStatus.UNLOADING or order.receive_pos_id is None:
+                await session.rollback()
+                return
+
+            now = datetime.utcnow()
+            order.mark_ready_for_pickup(now)
+            receive_pos = await ReceivePosRepository.get_by_order_locked(session, work_id)
+            if receive_pos is not None:
+                receive_pos.occupy(now)
+            await session.flush()
+            await broadcast_to_web(
+                session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
+            )
+            await broadcast_to_web(
+                session, "receive_pos.updated", await WorkRequestService._receive_pos_snapshot(session)
+            )
+            await session.commit()
+
+    @staticmethod
+    async def handle_unload1_failed(work_id: int) -> None:
+        """robot-events의 fail_unload1(프린터에서 완성품 집기 실패) 수신 처리. 상태는
+        바꾸지 않고 웹에 "작업대에 베드를 확인하세요!" 알럿만 띄운다."""
+        async with AsyncSessionLocal() as session:
+            await broadcast_to_web(
+                session,
+                "alert.unload_pick_failed",
+                {"work_id": work_id, "reason": AlertReason.UNLOAD_PICK_FAILED.value},
+            )
+            await session.commit()
+
+    @staticmethod
     async def retry_load(work_id: int) -> None:
         """베드 집기 실패(fail_load1) 알럿에서 사람이 적재대를 확인하고 "확인"을 누르면,
         그때 디스패치됐던 것과 같은 start_pos_id로 LOAD(집기) 명령을 SQS에 다시 보낸다.
@@ -273,7 +428,26 @@ class WorkRequestService:
             await session.rollback()
 
         # TODO: 실제 start_pos_id가 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
-        produced = await SqsProducerService.produce_load_command(work_id=work_id, start_pos_id=3)
+        produced = await SqsProducerService.produce_load_command(
+            work_id=work_id, start_pos_id=3, retry_token=uuid.uuid4().hex[:12]
+        )
+        if not produced:
+            raise SqsProduceError(work_id)
+
+    @staticmethod
+    async def retry_unload1(work_id: int) -> None:
+        """완성품 집기 실패(fail_unload1) 알럿에서 사람이 작업대의 베드를 확인하고
+        "확인"을 누르면, 같은 work_id로 unload1 명령을 다시 보낸다. fail_unload1은
+        상태를 바꾸지 않으므로 주문은 여전히 PRINT_DONE이어야 한다."""
+        async with AsyncSessionLocal() as session:
+            order = await OrderRepository.get(session, work_id)
+            if order is None or order.status != OrderStatus.PRINT_DONE:
+                raise UnloadRetryNotFoundError(work_id)
+
+        # TODO: 실제 프린터 슬롯이 아니라 3으로 하드코딩해 발행 중 — TimerService의 첫 unload1과 동일한 임시 조치.
+        produced = await SqsProducerService.produce_unload_command(
+            work_id=work_id, sd_pos_id=3, retry_token=uuid.uuid4().hex[:12]
+        )
         if not produced:
             raise SqsProduceError(work_id)
 
@@ -286,7 +460,7 @@ class WorkRequestService:
         name = customer_name or f"손님-{random.randint(0, 9999):04d}"
         user = await UserRepository.add(session, name=name, created_at=now)
 
-        order = Order.create_new(user_id=user.id, shape=chosen_shape, source=OrderSource.WORK_REQUEST, now=now)
+        order = Order.create_new(user_id=user.id, shape=chosen_shape, now=now)
         OrderRepository.add(session, order)
         await session.flush()
         await broadcast_to_web(session, "order.created", (await build_order_out(session, order)).model_dump(mode="json"))
@@ -297,3 +471,13 @@ class WorkRequestService:
     async def _board_stock_snapshot(session: AsyncSession) -> dict:
         rows = await BoardStockRepository.list_all(session)
         return {"slots": [{"slot": r.slot, "status": r.status.value} for r in rows]}
+
+    @staticmethod
+    async def _receive_pos_snapshot(session: AsyncSession) -> dict:
+        rows = await ReceivePosRepository.list_all(session)
+        return {
+            "positions": [
+                {"pos_id": r.pos_id, "status": r.status.value, "current_order_id": r.current_order_id}
+                for r in rows
+            ]
+        }

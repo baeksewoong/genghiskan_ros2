@@ -1,4 +1,5 @@
 """robot-events(SQS) <- success_load1 / success_load2 / fail_load1 /
+success_unload1 / success_unload2 / fail_unload1 /
 jog_complete / jog_failed / gripper_complete / gripper_failed 메시지 소비.
 PRD: assets/docs/prd-work-request-sqs.md 5장, assets/docs/prd-teaching-pendant.md 6/7장.
 
@@ -9,6 +10,12 @@ PRD: assets/docs/prd-work-request-sqs.md 5장, assets/docs/prd-teaching-pendant.
   프린터를 RESERVED→PRINTING(타이머 시작)으로 바꾼다("작업중" 표시).
 - {"work_id":1,"type":"fail_load1"}: 베드 집기 실패. 로봇/주문 상태는 바꾸지 않고
   웹에 알럿만 띄워서 사람이 적재대를 확인하고 재시도("확인")하게 한다.
+- {"work_id":1,"type":"success_unload1"}: 프린터에서 완성품 집기 성공. 비어있는
+  수령대(1번 우선, 차 있으면 2번)를 골라 receive_pos_id로 unload2 명령을 보낸다.
+- {"work_id":1,"type":"success_unload2"}: 수령대 내려놓기 성공. 주문을
+  READY_FOR_PICKUP으로 바꾼다(수령하기 전까지 그 수령대는 점유).
+- {"work_id":1,"type":"fail_unload1"}: 완성품 집기 실패. 상태는 그대로 두고 웹에
+  "작업대에 베드를 확인하세요!" 알럿만 띄운다.
 - {"jog_id":"...","status":"jog_complete"/"jog_failed", ...}: 티칭 팬던트 조그 1스텝
   완료/실패. work_id 계열과 필드명이 달라(status가 아니라 type이 아님) 서로
   겹치지 않는다 — TeachingPendantService의 런타임 조그 세션 상태를 갱신한다.
@@ -37,6 +44,9 @@ logger = logging.getLogger(__name__)
 _LOAD_SUCCESS_TYPE = "success_load1"
 _PLACE_SUCCESS_TYPE = "success_load2"
 _LOAD_PICK_FAILED_TYPE = "fail_load1"
+_UNLOAD1_SUCCESS_TYPE = "success_unload1"
+_UNLOAD1_FAILED_TYPE = "fail_unload1"
+_UNLOAD2_SUCCESS_TYPE = "success_unload2"
 _ERROR_BACKOFF_SEC = 3.0
 
 # 티칭 팬던트(조그/그리퍼) 이벤트 — PRD: assets/docs/prd-teaching-pendant.md 7장.
@@ -128,6 +138,30 @@ class SqsConsumerService:
                 logger.error("fail_load1 work_id가 올바르지 않습니다: %s", body)
             except Exception:
                 logger.exception("fail_load1 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("type") == _UNLOAD1_SUCCESS_TYPE and "work_id" in body:
+            try:
+                await WorkRequestService.handle_unload1_success(int(body["work_id"]))
+            except (TypeError, ValueError):
+                logger.error("success_unload1 work_id가 올바르지 않습니다: %s", body)
+            except Exception:
+                logger.exception("success_unload1 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("type") == _UNLOAD2_SUCCESS_TYPE and "work_id" in body:
+            try:
+                await WorkRequestService.handle_unload2_success(int(body["work_id"]))
+            except (TypeError, ValueError):
+                logger.error("success_unload2 work_id가 올바르지 않습니다: %s", body)
+            except Exception:
+                logger.exception("success_unload2 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("type") == _UNLOAD1_FAILED_TYPE and "work_id" in body:
+            try:
+                await WorkRequestService.handle_unload1_failed(int(body["work_id"]))
+            except (TypeError, ValueError):
+                logger.error("fail_unload1 work_id가 올바르지 않습니다: %s", body)
+            except Exception:
+                logger.exception("fail_unload1 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
                 return
         elif body.get("status") == _JOG_COMPLETE_STATUS and "jog_id" in body:
             try:

@@ -1,13 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.runtime import runtime
 from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
-from app.schemas import (
-    RobotStatusOut,
-    SimulatorSettingsOut,
-    StateSnapshot,
-)
+from app.schemas import StateSnapshot
 from app.services.order_presenter import build_order_out
 from app.services.printer_presenter import build_printer_out
 
@@ -22,13 +17,7 @@ class StateService:
 
         return StateSnapshot(
             printers=[await build_printer_out(session, p) for p in printers],
-            robot=RobotStatusOut(
-                state=runtime.robot_state,
-                current_task_id=runtime.current_task_id,
-                bridge_connected=runtime.bridge_connected(),
-            ),
             waiting_orders=[await build_order_out(session, o) for o in waiting],
             active_orders=[await build_order_out(session, o) for o in active],
             pickup_orders=[await build_order_out(session, o) for o in pickup],
-            simulator=SimulatorSettingsOut(time_scale=runtime.simulator_time_scale),
         )

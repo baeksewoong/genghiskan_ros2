@@ -1,17 +1,14 @@
-import random
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import broadcast_to_web
-from app.enums import OrderSource, OrderStatus, Shape
+from app.enums import OrderStatus
 from app.models import InvalidStateTransitionError, Order
 from app.repositories.order_repository import OrderRepository
-from app.repositories.user_repository import UserRepository
-from app.services.dispatcher_service import DispatcherService
+from app.repositories.receive_pos_repository import ReceivePosRepository
 from app.services.order_presenter import build_order_out
-
-_SHAPE_CHOICES = list(Shape)
+from app.services.work_request_service import WorkRequestService
 
 
 class OrderNotPickupableError(Exception):
@@ -25,38 +22,12 @@ class OrderNotPickupableError(Exception):
 
 class OrderService:
     @staticmethod
-    async def create_order(
-        session: AsyncSession,
-        shape: Shape | None,
-        source: OrderSource,
-        customer_name: str | None = None,
-    ) -> Order:
-        chosen_shape = shape or random.choice(_SHAPE_CHOICES)
-        now = datetime.utcnow()
-
-        name = customer_name or f"손님-{random.randint(0, 9999):04d}"
-        user = await UserRepository.add(session, name=name, created_at=now)
-
-        order = Order.create_new(user_id=user.id, shape=chosen_shape, source=source, now=now)
-        OrderRepository.add(session, order)
-        await session.flush()
-
-        await broadcast_to_web(session, "order.created", (await build_order_out(session, order)).model_dump(mode="json"))
-        await session.commit()
-
-        await DispatcherService.run_cycle()
-        # 디스패처가 다른 세션으로 이 주문을 즉시 LOAD 디스패치했을 수 있으므로 최신 상태로 갱신한다.
-        await session.refresh(order)
-        return order
-
-    @staticmethod
     async def list_orders(session: AsyncSession, status: OrderStatus | None, limit: int) -> list[Order]:
         return await OrderRepository.list_recent(session, status, limit)
 
     @staticmethod
     async def pick_up(session: AsyncSession, order_id: int) -> Order:
-        """수령대에서 "수령하기"를 눌렀을 때만 PICKED_UP으로 전환한다 — 더 이상
-        pickup_delay_sec이 지나면 자동으로 전환되지 않는다."""
+        """수령대에서 "수령하기"를 눌렀을 때만 PICKED_UP으로 전환한다."""
         order = await OrderRepository.get_locked(session, order_id)
         if order is None:
             await session.rollback()
@@ -68,8 +39,21 @@ class OrderService:
         except InvalidStateTransitionError:
             await session.rollback()
             raise OrderNotPickupableError(order_id) from None
+
+        # 이 주문이 올라가 있던 수령대를 비운다.
+        receive_pos = await ReceivePosRepository.get_by_order_locked(session, order_id)
+        if receive_pos is not None:
+            receive_pos.release(now)
         await session.flush()
 
         await broadcast_to_web(session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json"))
+        if receive_pos is not None:
+            await broadcast_to_web(
+                session, "receive_pos.updated", await WorkRequestService._receive_pos_snapshot(session)
+            )
         await session.commit()
+
+        # 수령대 자리가 났다 — 수령대가 가득 차서 대기 중인 완성품이 있으면 unload2를 이어서 보낸다.
+        # (작업요청 SQS 경로 전용. 대기 주문이 없으면 아무것도 하지 않는다.)
+        await WorkRequestService.dispatch_pending_unload2()
         return order

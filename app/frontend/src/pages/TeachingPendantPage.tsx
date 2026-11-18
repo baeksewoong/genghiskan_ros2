@@ -16,12 +16,10 @@ const LINEAR_AXES: JogAxis[] = ["X", "Y", "Z"];
 // TP-11: 완료/실패 응답이 이 시간 내 오지 않으면 타임아웃 에러를 띄운다.
 const RESPONSE_TIMEOUT_MS = 10000;
 
-/** 티칭 팬던트(실물 로봇 조그 제어) 페이지 — 가상 로봇(/ws/bridge, DashboardPage)과는
- * 완전히 분리된 독립 페이지다(PRD: assets/docs/prd-teaching-pendant.md). 이 페이지가
+/** 티칭 팬던트(실물 로봇 조그 제어) 페이지 (PRD: assets/docs/prd-teaching-pendant.md). 이 페이지가
  * API 호출과 상태 소유를 전부 가지고, organism들에는 props로만 내려준다. */
 export function TeachingPendantPage() {
   const {
-    snapshot,
     connected,
     teachingPendant,
     beginTeachingPendantJog,
@@ -47,16 +45,9 @@ export function TeachingPendantPage() {
     };
   }, []);
 
-  // 3장/9장: 세션 비활성, ws/로봇 연결 끊김, 로봇 에러 상태면 방향키·그리퍼 버튼을
-  // 전부 막는다(요구사항 10).
-  const bridgeConnected = snapshot?.robot.bridge_connected ?? false;
-  const robotState = snapshot?.robot.state ?? "DISCONNECTED";
-  const controlsDisabled =
-    !teachingPendant.enabled ||
-    !connected ||
-    !bridgeConnected ||
-    robotState === "ERROR" ||
-    robotState === "DISCONNECTED";
+  // 3장/9장: 세션 비활성이거나 서버 연결이 끊기면 방향키·그리퍼 버튼을 전부 막는다(요구사항 10).
+  // 로봇과는 SQS로만 통신하므로 별도 "로봇 연결" 조건은 없다.
+  const controlsDisabled = !teachingPendant.enabled || !connected;
   // 8.2 스텝 상호 배제: 조그/그리퍼 중 하나라도 응답 대기 중이면 둘 다 새 요청을 막는다.
   const jogOrGripperBusy = teachingPendant.jogPending || teachingPendant.gripperPending;
 
@@ -143,8 +134,6 @@ export function TeachingPendantPage() {
       status={
         <RobotPoseStatusPanel
           wsConnected={connected}
-          bridgeConnected={bridgeConnected}
-          robotState={robotState}
           enabled={teachingPendant.enabled}
           owner={teachingPendant.owner}
           currentPose={teachingPendant.currentPose}
