@@ -60,16 +60,13 @@ export class M0609RobotRig {
     const loader = new URDFLoader(manager);
     loader.parseVisual = true;
     loader.parseCollision = false;
-    loader.loadMeshCb = (path, loadManager, done) => {
+    loader.loadMeshCb = (path, loadManager, material, done) => {
       if (/\.stl$/i.test(path)) {
         const stlLoader = new STLLoader(loadManager);
         stlLoader.load(
           path,
           (geom) => {
-            const mesh = new THREE.Mesh(
-              geom,
-              new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.25, roughness: 0.55 })
-            );
+            const mesh = new THREE.Mesh(geom, material);
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             done(mesh);
@@ -85,6 +82,10 @@ export class M0609RobotRig {
         daeLoader.load(
           path,
           (dae) => {
+            if (!dae) {
+              done(new THREE.Group(), new Error(`Failed to parse Collada file: ${path}`));
+              return;
+            }
             // Strip embedded Blender lights/cameras from official DAE files
             const toRemove: THREE.Object3D[] = [];
             dae.scene.traverse((child) => {
@@ -111,9 +112,9 @@ export class M0609RobotRig {
 
     let pendingMeshes = 0;
     const origLoadMeshCb = loader.loadMeshCb;
-    loader.loadMeshCb = (path, loadManager, done) => {
+    loader.loadMeshCb = (path, loadManager, material, done) => {
       pendingMeshes += 1;
-      origLoadMeshCb(path, loadManager, (obj, err) => {
+      origLoadMeshCb(path, loadManager, material, (obj, err) => {
         pendingMeshes = Math.max(0, pendingMeshes - 1);
         done(obj, err);
       });

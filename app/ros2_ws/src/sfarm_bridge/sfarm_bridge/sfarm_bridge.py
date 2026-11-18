@@ -25,8 +25,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
-from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1, Unload2
-from sfarm_interfaces.srv import Error
+from sfarm_interfaces.action import Gripper, Jog, Load, Load1, Load2, Unload, Unload1, Unload2
+from sfarm_interfaces.srv import Error, JogStop
 
 COMPLETED_EVENT = {'LOAD': 'LOAD_COMPLETED', 'UNLOAD': 'UNLOAD_COMPLETED'}
 ACTION_COMPLETED_EVENT = {'LOAD': 'LOAD_COMPLETED', 'UNLOAD': 'UNLOAD_COMPLETED'}
@@ -35,6 +35,13 @@ DEFAULT_COMMAND_QUEUE_URL = (
 )
 DEFAULT_EVENT_QUEUE_URL = (
     'https://sqs.ap-northeast-2.amazonaws.com/135135392043/robot-events'
+)
+# STOP 전용 Standard(비-FIFO) SQS 큐 (PRD 5.2, 사용자가 2026-11-18 생성 완료).
+# JOG/GRIPPER는 기존 robot-commands.fifo(그룹 "jog")를 그대로 쓰지만, STOP은
+# consume_loop()가 완전히 순차적이라 같은 큐에 넣으면 "지금 처리 중인 JOG 뒤에
+# 줄 서서 기다리는" 지연이 생기므로 분리한다.
+DEFAULT_STOP_QUEUE_URL = (
+    'https://sqs.ap-northeast-2.amazonaws.com/135135392043/robot-commands-stop'
 )
 
 
@@ -139,6 +146,55 @@ def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
         }
 
     return None, None
+
+
+def parse_jog_or_gripper_command(command: dict) -> tuple[str | None, dict | None]:
+    """'JOG'|'GRIPPER' 메시지를 goal 필드로. 해당 없으면 (None, None).
+
+    handle_message()가 parse_task_command()보다 먼저 이 함수를 시도한다 (PRD 3.1) -
+    JOG/GRIPPER 필드는 LOAD/UNLOAD류와 구조가 달라 parse_task_command에 억지로
+    합치면 오히려 읽기 어려워지기 때문이다.
+    """
+    if not isinstance(command, dict):
+        return None, None
+    raw_type = str(command.get('type') or '').strip().upper()
+    if raw_type == 'JOG':
+        required = ('jog_id', 'space', 'axis', 'direction', 'step_size')
+        if not all(k in command for k in required):
+            return None, None
+        return 'JOG', {
+            'jog_id': str(command['jog_id']),
+            'space': str(command['space']).strip().upper(),
+            'ref_frame': str(command.get('ref_frame') or '').strip().upper(),
+            'axis': str(command['axis']).strip().upper(),
+            'direction': int(command['direction']),
+            'step_size': float(command['step_size']),
+        }
+    if raw_type == 'GRIPPER':
+        if 'gripper_cmd_id' not in command or 'action' not in command:
+            return None, None
+        return 'GRIPPER', {
+            'gripper_cmd_id': str(command['gripper_cmd_id']),
+            'action': str(command['action']).strip().upper(),
+        }
+    return None, None
+
+
+def build_jog_result_event(result: 'Jog.Result') -> dict:
+    """Build a robot-events SQS payload from a Jog action result (PRD 3.1/7장)."""
+    if result.success:
+        return {'jog_id': result.jog_id, 'status': 'jog_complete', 'posx': list(result.posx)}
+    return {'jog_id': result.jog_id, 'status': 'jog_failed',
+            'error_code': 'EXECUTION_FAILED', 'message': result.message}
+
+
+def build_gripper_result_event(result: 'Gripper.Result') -> dict:
+    """Build a robot-events SQS payload from a Gripper action result (PRD 3.1/7장)."""
+    if result.success:
+        return {'gripper_cmd_id': result.gripper_cmd_id, 'status': 'gripper_complete',
+                'state': result.state}
+    return {'gripper_cmd_id': result.gripper_cmd_id, 'status': 'gripper_failed',
+            'error_code': 'EXECUTION_FAILED', 'message': result.message}
 
 
 def build_robot_event(command: dict, default_robot_id: str) -> dict:
@@ -262,6 +318,10 @@ class SqsEchoNode(Node):
             'EVENT_QUEUE_URL',
             DEFAULT_EVENT_QUEUE_URL,
         )
+        default_stop_url = os.getenv(
+            'STOP_QUEUE_URL',
+            DEFAULT_STOP_QUEUE_URL,
+        )
 
         self.robot_id = self.declare_parameter('robot_id', 'robot-arm-1').value
         region = self.declare_parameter('aws_region', default_region).value
@@ -271,6 +331,9 @@ class SqsEchoNode(Node):
         self.event_queue_url = self.declare_parameter(
             'event_queue_url', default_event_url
         ).value
+        self.stop_queue_url = self.declare_parameter(
+            'stop_queue_url', default_stop_url
+        ).value
         self.action_timeout_sec = float(
             self.declare_parameter('action_timeout_sec', 120.0).value
         )
@@ -279,6 +342,9 @@ class SqsEchoNode(Node):
         )
         self.load_stop_service = str(
             self.declare_parameter('load_stop_service', '/sfarm/load/stop').value
+        )
+        self.jog_stop_service = str(
+            self.declare_parameter('jog_stop_service', '/sfarm/jog/stop').value
         )
 
         if not self.command_queue_url or not self.event_queue_url:
@@ -300,8 +366,17 @@ class SqsEchoNode(Node):
         self.unload2_client = ActionClient(
             self, Unload2, '/sfarm/unload2', callback_group=self.cb_group
         )
+        self.jog_client = ActionClient(
+            self, Jog, '/sfarm/jog', callback_group=self.cb_group
+        )
+        self.gripper_client = ActionClient(
+            self, Gripper, '/sfarm/gripper', callback_group=self.cb_group
+        )
         self.load_stop_client = self.create_client(
             Error, self.load_stop_service, callback_group=self.cb_group
+        )
+        self.jog_stop_client = self.create_client(
+            JogStop, self.jog_stop_service, callback_group=self.cb_group
         )
         self.error_srv = self.create_service(
             Error, '/sfarm/error', self.handle_error_service, callback_group=self.cb_group
@@ -313,6 +388,18 @@ class SqsEchoNode(Node):
         self.worker = threading.Thread(target=self.consume_loop, daemon=True)
         self.worker.start()
         self.get_logger().info(f'listening on {self.command_queue_url}')
+
+        # STOP은 robot-commands.fifo와 완전히 독립된 두 번째 백그라운드 스레드로 읽는다
+        # (PRD 5.2) - consume_loop()가 완전히 순차적(블로킹 액션 호출 후 다음 수신)이라
+        # 같은 큐/같은 스레드로 STOP을 보내면 지금 처리 중인 JOG 스텝 뒤에 줄 서게 되어
+        # 즉시성이 사라진다. 짧은 WaitTimeSeconds로 더 자주 polling한다.
+        if self.stop_queue_url:
+            self.stop_worker = threading.Thread(target=self.stop_consume_loop, daemon=True)
+            self.stop_worker.start()
+            self.get_logger().info(f'listening (stop channel) on {self.stop_queue_url}')
+        else:
+            self.stop_worker = None
+            self.get_logger().warning('stop_queue_url이 비어 있어 STOP 채널을 시작하지 않음')
 
     # ---------------------------------------------------------------- service
     def handle_error_service(self, request: Error.Request, response: Error.Response):
@@ -371,6 +458,31 @@ class SqsEchoNode(Node):
         except json.JSONDecodeError:
             self.get_logger().error('body is not JSON; deleting message')
             self.delete(message)
+            return
+
+        jog_kind, jog_fields = parse_jog_or_gripper_command(command)
+        if jog_kind == 'JOG':
+            result = self.execute_jog(jog_fields)
+            if result is None:
+                self.get_logger().warning(
+                    'JOG action did not complete; keeping SQS message for retry'
+                )
+                return
+            event = build_jog_result_event(result)
+            if self.produce(event):
+                self.delete(message)
+            return
+
+        if jog_kind == 'GRIPPER':
+            result = self.execute_gripper(jog_fields)
+            if result is None:
+                self.get_logger().warning(
+                    'GRIPPER action did not complete; keeping SQS message for retry'
+                )
+                return
+            event = build_gripper_result_event(result)
+            if self.produce(event):
+                self.delete(message)
             return
 
         action_kind, goal_fields = parse_task_command(command)
@@ -523,6 +635,203 @@ class SqsEchoNode(Node):
                 return None
 
         return holder['result']
+
+    # ---------------------------------------------------------------- jog/gripper
+    def execute_jog(self, fields: dict) -> 'Jog.Result | None':
+        """Send a Jog goal to /sfarm/jog and wait for the result (PRD 3.1).
+
+        기존 execute_load1과 완전히 같은 모양(ActionClient + wait_for_server +
+        send_goal_async + feedback/result 콜백 + action_timeout_sec 폴링)으로
+        작성한다. goal이 거절되면(로봇이 LOAD/UNLOAD 중) None을 돌려주고,
+        handle_message()가 SQS 메시지를 지우지 않아 다음 polling에서 재시도된다
+        (PRD 3.1/7장 - 실패를 삼키지 않는다는 기존 원칙과 일치).
+        """
+        if not self.jog_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('/sfarm/jog action server is not available')
+            return None
+
+        goal_msg = Jog.Goal()
+        goal_msg.jog_id = fields['jog_id']
+        goal_msg.space = fields['space']
+        goal_msg.ref_frame = fields['ref_frame']
+        goal_msg.axis = fields['axis']
+        goal_msg.direction = fields['direction']
+        goal_msg.step_size = fields['step_size']
+        self.get_logger().info(f'Sending goal to /sfarm/jog: {fields}')
+
+        done_event = threading.Event()
+        holder: dict = {'result': None}
+
+        def on_feedback(feedback_msg) -> None:
+            fb = feedback_msg.feedback
+            self.get_logger().info(f'[/sfarm/jog feedback] jog_id={fb.jog_id}')
+
+        def on_result(future) -> None:
+            try:
+                holder['result'] = future.result().result
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f'/sfarm/jog result error: {exc}')
+            finally:
+                done_event.set()
+
+        def on_goal_response(future) -> None:
+            try:
+                goal_handle = future.result()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f'/sfarm/jog goal error: {exc}')
+                done_event.set()
+                return
+            if not goal_handle.accepted:
+                self.get_logger().warning('/sfarm/jog goal was rejected')
+                done_event.set()
+                return
+            self.get_logger().info('/sfarm/jog goal accepted')
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(on_result)
+
+        goal_future = self.jog_client.send_goal_async(goal_msg, feedback_callback=on_feedback)
+        goal_future.add_done_callback(on_goal_response)
+
+        deadline = self.action_timeout_sec
+        waited = 0.0
+        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
+            if done_event.wait(timeout=0.5):
+                break
+            waited += 0.5
+            if waited >= deadline:
+                self.get_logger().error(f'/sfarm/jog timed out after {deadline}s')
+                return None
+
+        return holder['result']
+
+    def execute_gripper(self, fields: dict) -> 'Gripper.Result | None':
+        """Send a Gripper goal to /sfarm/gripper and wait for the result (PRD 3.1).
+
+        execute_jog와 완전히 같은 모양(execute_load1 패턴 복제)."""
+        if not self.gripper_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('/sfarm/gripper action server is not available')
+            return None
+
+        goal_msg = Gripper.Goal()
+        goal_msg.gripper_cmd_id = fields['gripper_cmd_id']
+        goal_msg.action = fields['action']
+        self.get_logger().info(f'Sending goal to /sfarm/gripper: {fields}')
+
+        done_event = threading.Event()
+        holder: dict = {'result': None}
+
+        def on_feedback(feedback_msg) -> None:
+            fb = feedback_msg.feedback
+            self.get_logger().info(f'[/sfarm/gripper feedback] gripper_cmd_id={fb.gripper_cmd_id}')
+
+        def on_result(future) -> None:
+            try:
+                holder['result'] = future.result().result
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f'/sfarm/gripper result error: {exc}')
+            finally:
+                done_event.set()
+
+        def on_goal_response(future) -> None:
+            try:
+                goal_handle = future.result()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f'/sfarm/gripper goal error: {exc}')
+                done_event.set()
+                return
+            if not goal_handle.accepted:
+                self.get_logger().warning('/sfarm/gripper goal was rejected')
+                done_event.set()
+                return
+            self.get_logger().info('/sfarm/gripper goal accepted')
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(on_result)
+
+        goal_future = self.gripper_client.send_goal_async(
+            goal_msg, feedback_callback=on_feedback
+        )
+        goal_future.add_done_callback(on_goal_response)
+
+        deadline = self.action_timeout_sec
+        waited = 0.0
+        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
+            if done_event.wait(timeout=0.5):
+                break
+            waited += 0.5
+            if waited >= deadline:
+                self.get_logger().error(f'/sfarm/gripper timed out after {deadline}s')
+                return None
+
+        return holder['result']
+
+    # ---------------------------------------------------------------- STOP (전용 채널)
+    def stop_consume_loop(self) -> None:
+        """robot-commands-stop(Standard SQS)을 짧은 WaitTimeSeconds로 polling하는
+        독립된 백그라운드 스레드 (PRD 5.2). STOP은 순서 없는 멱등 명령이라
+        여러 번/중복 수신돼도 안전하다 - 받을 때마다 /sfarm/jog/stop 서비스를
+        (ROS 2 서비스 클라이언트로, SQS가 아님) 호출만 시도한다.
+        """
+        while not self.stop.is_set() and rclpy.ok():
+            try:
+                resp = self.sqs.receive_message(
+                    QueueUrl=self.stop_queue_url,
+                    MaxNumberOfMessages=1,
+                    WaitTimeSeconds=5,
+                )
+            except (BotoCoreError, ClientError) as e:
+                self.get_logger().error(f'stop queue receive failed: {e}')
+                self.stop.wait(3.0)
+                continue
+
+            for message in resp.get('Messages', []):
+                self.handle_stop_message(message)
+
+    def handle_stop_message(self, message: dict) -> None:
+        """Parse a STOP message and call /sfarm/jog/stop, then delete it unconditionally.
+
+        Standard 큐라 멱등하므로, 서비스 호출 성공/실패와 무관하게 메시지를
+        지운다(재시도는 다음 STOP 클릭이 또 보내주므로 여기서 재시도용으로 남길
+        필요가 없다 - PRD 5.2 "여러 번 와도 무해").
+        """
+        reason = ''
+        try:
+            body = json.loads(message.get('Body', '{}'))
+            if isinstance(body, dict):
+                reason = str(body.get('reason') or '')
+        except json.JSONDecodeError:
+            pass
+        self.call_jog_stop_service(reason)
+        try:
+            self.sqs.delete_message(
+                QueueUrl=self.stop_queue_url,
+                ReceiptHandle=message['ReceiptHandle'],
+            )
+        except (BotoCoreError, ClientError) as e:
+            self.get_logger().error(f'stop queue delete failed: {e}')
+
+    def call_jog_stop_service(self, reason: str = '') -> None:
+        """Call /sfarm/jog/stop asynchronously (ROS 2 service, not SQS)."""
+        if not self.jog_stop_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warning(
+                f'{self.jog_stop_service} service is not available; skip stop request'
+            )
+            return
+        req = JogStop.Request()
+        req.reason = reason
+        future = self.jog_stop_client.call_async(req)
+        future.add_done_callback(self._on_jog_stop_response)
+
+    def _on_jog_stop_response(self, future) -> None:
+        """Log the response from /sfarm/jog/stop."""
+        try:
+            resp = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'{self.jog_stop_service} call failed: {exc}')
+            return
+        self.get_logger().info(
+            f'[{self.jog_stop_service}] response: success={resp.success} '
+            f'stopped_motion={resp.stopped_motion} message={resp.message}'
+        )
 
     # ---------------------------------------------------------------- load1 callbacks
     def execute_load1(
