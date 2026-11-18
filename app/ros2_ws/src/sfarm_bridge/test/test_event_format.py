@@ -114,10 +114,17 @@ def test_parse_task_command_load_and_unload():
     assert kind_u1 == 'UNLOAD1'
     assert fields_u1 == {'work_id': 180, 'sd_pos_id': 2}
 
-    unload2_cmd = {'type': 'unload2', 'work_id': 181}
+    unload2_cmd = {'type': 'unload2', 'work_id': 181, 'receive_pos_id': 1}
     kind_u2, fields_u2 = parse_task_command(unload2_cmd)
     assert kind_u2 == 'UNLOAD2'
-    assert fields_u2 == {'work_id': 181}
+    assert fields_u2 == {'work_id': 181, 'receive_pos_id': 1}
+
+    unload2_typo_cmd = {'type': 'unload2', 'work_id': 182, 'recieve_pos_id': 2}
+    kind_u2_t, fields_u2_t = parse_task_command(unload2_typo_cmd)
+    assert kind_u2_t == 'UNLOAD2'
+    assert fields_u2_t == {'work_id': 182, 'receive_pos_id': 2}
+
+    assert parse_task_command({'type': 'unload2', 'work_id': 183}) == (None, None)
 
     unload_cmd = {'work_id': 17, 'sd_pos_id': 2, 'receive_pos_id': 1}
     kind2, fields2 = parse_task_command(unload_cmd)
@@ -368,13 +375,17 @@ def test_build_and_handle_unload2_result():
         'work_id': 181,
     }
 
+    goal_u2 = Unload2.Goal(work_id=181, receive_pos_id=1)
+    assert goal_u2.work_id == 181
+    assert goal_u2.receive_pos_id == 1
+
     fake_node.reset_mock()
     fake_node.execute_unload2.return_value = (ok_res, True)
     msg_u2 = {
         'MessageId': 'msg-181',
         'ReceiptHandle': 'rh-181',
-        'Body': '{"type": "unload2", "work_id": 181}',
+        'Body': '{"type": "unload2", "work_id": 181, "receive_pos_id": 1}',
     }
     SqsEchoNode.handle_message(fake_node, msg_u2)
-    fake_node.execute_unload2.assert_called_once_with(work_id=181)
+    fake_node.execute_unload2.assert_called_once_with(work_id=181, receive_pos_id=1)
     fake_node.delete.assert_called_once_with(msg_u2)

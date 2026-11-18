@@ -81,7 +81,11 @@ def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
         )
     )
     start_pos_id = _to_int(command.get('start_pos_id'))
-    receive_pos_id = _to_int(command.get('receive_pos_id'))
+    receive_pos_id = _to_int(
+        command.get('receive_pos_id')
+        if command.get('receive_pos_id') is not None
+        else command.get('recieve_pos_id')
+    )
 
     raw_type = str(
         command.get('type') or command.get('command_type') or ''
@@ -113,9 +117,10 @@ def parse_task_command(command: dict) -> tuple[str | None, dict | None]:
             'sd_pos_id': sd_pos_id,
         }
 
-    if raw_type == 'UNLOAD2' and work_id is not None:
+    if raw_type == 'UNLOAD2' and work_id is not None and receive_pos_id is not None:
         return 'UNLOAD2', {
             'work_id': work_id,
+            'receive_pos_id': receive_pos_id,
         }
 
     is_unload = raw_type == 'UNLOAD' or (
@@ -421,6 +426,7 @@ class SqsEchoNode(Node):
         if action_kind == 'UNLOAD2':
             result, event_sent = self.execute_unload2(
                 work_id=goal_fields['work_id'],
+                receive_pos_id=goal_fields['receive_pos_id'],
             )
             if result is None:
                 self.get_logger().warning(
@@ -910,6 +916,7 @@ class SqsEchoNode(Node):
     def execute_unload2(
         self,
         work_id: int,
+        receive_pos_id: int,
     ) -> tuple[Unload2.Result | None, bool]:
         """Send an Unload2 goal to /sfarm/unload2 and handle success/failure callbacks."""
         if not self.unload2_client.wait_for_server(timeout_sec=5.0):
@@ -918,7 +925,11 @@ class SqsEchoNode(Node):
 
         goal_msg = Unload2.Goal()
         goal_msg.work_id = work_id
-        self.get_logger().info(f'Sending goal to /sfarm/unload2: work_id={work_id}')
+        goal_msg.receive_pos_id = receive_pos_id
+        self.get_logger().info(
+            f'Sending goal to /sfarm/unload2: '
+            f'work_id={work_id}, receive_pos_id={receive_pos_id}'
+        )
 
         done_event = threading.Event()
         holder: dict = {'result': None, 'event_sent': False}
