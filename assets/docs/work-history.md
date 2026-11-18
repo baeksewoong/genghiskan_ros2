@@ -6,6 +6,68 @@
 
 ---
 
+## 2026-11-18 — M0609 3D 뷰어를 home으로 이동 + atomic design 재배치
+
+### 현재 상태 (이어서 작업하기 전에 확인)
+
+| 항목 | 상태 |
+| --- | --- |
+| 커밋 | **커밋 전.** 브랜치 `feat/add_3d_module`, 마지막 커밋 `95549fc feat: add 3d module`. 이 날짜의 변경은 전부 작업 트리에만 있다 |
+| 프론트 | `cd app/frontend && npx tsc --noEmit && npm run build` → 통과 |
+| 백엔드 | 건드리지 않음 |
+| 실제 기동 확인 | `npm run dev`로 홈(`#/`) 접근은 확인(HTML 정상 응답). **브라우저로 3D 뷰어가 실제로 뜨는 화면은 못 봤다** — 아래 "알려진 문제" 때문에 ERROR 배지만 뜰 것 |
+
+### 한 일
+
+#### 1. `DoosanM0609Viewer`를 organisms로 재배치
+
+- `app/frontend/src/components/templates/{react.tsx,index.ts,element.ts,core/,transports/}`는 실제로는 상태를 가진 완결된 컴포넌트(Three.js 씬, URDF 로딩, 조인트 보간 등)인데 `templates/`(레이아웃 전용이어야 함)에 잘못 들어가 있었다. atomic design 규칙 위반.
+- `app/frontend/src/components/organisms/DoosanArmViewer/`로 통째로 이동했다. 이 폴더(`core/`, `transports/` 빈 디렉터리)는 이전에 누군가 미리 만들어두고 채우지 않은 상태였다 — 원래 의도된 위치였던 것으로 보인다.
+- export 이름(`DoosanM0609Viewer`)과 내부 상대 경로는 그대로 유지했다 (기계적 이동).
+
+#### 2. 홈(대시보드)에 연결
+
+- `DashboardTemplate.tsx`에 `armViewer` 슬롯 추가.
+- `DashboardPage.tsx`에서 `<DoosanM0609Viewer assetsBaseUrl="/assets/doosan/m0609_rg2" gripper="rg2" .../>`를 렌더링. `useLiveState().teachingPendant.currentPose`가 JOINT 공간일 때 `posj`(deg)를 `joints` prop으로 그대로 흘려서, 티칭 팬던트로 조그 중인 실제 관절각이 홈 화면 3D 뷰어에도 반영되게 했다 (POSX/TASK 공간일 때는 넘기지 않음 — joint 입력이 아니므로).
+- `styles.css`에 `.arm-viewer-panel` 추가 (기존 `.layout` 그리드는 고정 높이가 없어서 뷰어에 명시적 높이 필요).
+
+#### 3. 사전에 있던 버그 2건 수정 (내 변경과 무관하게 `95549fc`에 이미 있던 문제)
+
+| 버그 | 원인 | 수정 |
+| --- | --- | --- |
+| `npm install`하면 3D 뷰어가 깨짐 | `three`·`urdf-loader`가 `node_modules`엔 물리적으로 있지만 `package.json`/lock에 선언이 안 돼 있었음 (아마 `--save` 없이 수동 설치) | `npm install --save three@0.187.0 urdf-loader@0.13.1` + `npm install --save-dev @types/three`로 정식 선언 |
+| 메시 로딩 시 런타임 에러 날 수밖에 없는 구조 | `robot_rig.ts`의 `loader.loadMeshCb`가 3개 인자(`path, manager, done`)로 작성됐는데, 실제 설치된 `urdf-loader@0.13.1` API는 4개 인자(`path, manager, material, done`) | 실제 시그니처로 수정, STL 메시에는 URDF `<material>` 태그에서 온 `material`을 그대로 적용 (하드코딩된 머티리얼 대신) |
+
+- 이 두 버그는 지금까지 `tsc --noEmit`이 이 파일에 대해 성공적으로 돌아간 적이 없었다는 뜻이다 (package.json에 의존성이 없어서 빌드가 애초에 안 됐을 것).
+
+#### 4. `scripts/setup.sh`
+
+- `npm install` 뒤에 `public/assets/doosan/m0609_rg2/`에 `.urdf` 파일이 하나도 없으면 경고를 띄우는 체크 추가 (아래 알려진 문제와 연결).
+
+### 알려진 문제 (미해결)
+
+- **⚠️ 두산 M0609 URDF/메시 파일이 실제로 하나도 없다.** `app/frontend/public/assets/doosan/m0609_rg2/`와 하위 `meshes/`는 git 추적 여부와 상관없이 완전히 빈 디렉터리다. 지금 홈 화면 3D 뷰어는 로드를 시도하다 실패해서 "ERROR" 배지만 표시된다 (컴포넌트 자체는 try/catch로 안전하게 처리되어 있어 화면이 깨지지는 않음). **누군가 실제 URDF + 메시 파일을 이 경로에 넣어야 뷰어가 실제로 로봇을 그린다.**
+
+### 다음 작업 (우선순위 순)
+
+1. **URDF/메시 파일 확보해서 `public/assets/doosan/m0609_rg2/`에 추가.** 이게 없으면 이번 작업 전체가 화면상으로는 "ERROR" 배지 외엔 아무 의미가 없다.
+2. 파일을 넣은 뒤 브라우저로 실제 렌더링 확인 (지금까지 한 번도 확인 못 함).
+3. 확인되면 기능별로 나눠 커밋 (이번엔 사용자 요청으로 이 세션에서 커밋함 — 평소엔 사용자가 직접 커밋).
+4. `teachingPendant` 세션이 비활성(홈에 아무도 조그 안 하는 상태)일 때 3D 뷰어 기본 포즈를 어떻게 할지 정하기 (지금은 `joints`가 `undefined`면 뷰어 내부 기본값 그대로 — 확인 필요).
+
+### 변경 파일 요약
+
+- **이동한 파일 (내용은 거의 그대로):**
+  - `app/frontend/src/components/templates/{react.tsx→organisms/DoosanArmViewer/DoosanArmViewer.tsx, index.ts, element.ts, core/*, transports/*}`
+- **수정한 파일:**
+  - `app/frontend/src/components/organisms/DoosanArmViewer/core/robot_rig.ts` (loadMeshCb 시그니처 버그 수정)
+  - `app/frontend/src/components/templates/DashboardTemplate.tsx`, `app/frontend/src/pages/DashboardPage.tsx`, `app/frontend/src/styles.css`
+  - `app/frontend/package.json`, `package-lock.json` (three/urdf-loader/@types/three 정식 선언)
+  - `app/scripts/setup.sh` (URDF 자산 누락 경고)
+- **새로 만든 문서:** 이 항목
+
+---
+
 ## 2026-11-18 — UNLOAD 2단계, 수령대, 가상 로봇 제거
 
 ### 현재 상태 (이어서 작업하기 전에 확인)

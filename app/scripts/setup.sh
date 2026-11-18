@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 log() { printf '\n\033[1;34m[setup]\033[0m %s\n' "$1"; }
+warn() { printf '\n\033[1;33m[setup][WARN]\033[0m %s\n' "$1" >&2; }
 err() { printf '\n\033[1;31m[setup][ERROR]\033[0m %s\n' "$1" >&2; }
 
 require_cmd() {
@@ -58,6 +59,11 @@ setup_python_component "$APP_DIR/backend"
 log "프론트엔드 패키지를 설치합니다 (npm install)"
 (cd "$APP_DIR/frontend" && npm install)
 ensure_env_file "$APP_DIR/frontend"
+
+doosan_assets_dir="$APP_DIR/frontend/public/assets/doosan/m0609_rg2"
+if ! find "$doosan_assets_dir" -name '*.urdf' -print -quit 2>/dev/null | grep -q .; then
+  warn "두산 M0609 URDF/메시 파일이 없습니다 ($doosan_assets_dir). 홈 화면 3D 뷰어는 파일을 추가하기 전까지 로딩 에러만 표시됩니다."
+fi
 
 log "MySQL 컨테이너를 기동합니다 (docker compose up -d mysql)"
 (cd "$APP_DIR" && docker compose up -d mysql)
