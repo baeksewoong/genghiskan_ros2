@@ -354,8 +354,11 @@ def rotate_about_base_y(abc: list, deg: float) -> list:
     return rotate_about_base('y', abc, deg)
 
 
-def move_rel(dx: float = 0.0, dy: float = 0.0, dz: float = 0.0, log=print) -> None:
-    """지금 자세 그대로 X/Y/Z로 mm만큼 직선 이동 (INSERT_VELX, 느리게). 못 가면 예외."""
+def move_rel(dx: float = 0.0, dy: float = 0.0, dz: float = 0.0, log=print, check: bool = True) -> None:
+    """지금 자세 그대로 X/Y/Z로 mm만큼 직선 이동 (INSERT_VELX, 느리게).
+
+    check=True면 목표에서 REACH_TOL_MM 넘게 벗어나면 예외, False면 경고만 찍고 계속.
+    """
     cur = list(get_current_posx()[0])
     target = list(cur)
     target[0] += dx
@@ -367,8 +370,11 @@ def move_rel(dx: float = 0.0, dy: float = 0.0, dz: float = 0.0, log=print) -> No
     now = list(get_current_posx()[0])
     err = max(abs(now[i] - target[i]) for i in range(3))
     if err > REACH_TOL_MM:
-        raise RuntimeError(f'목표까지 못 감 (차이 {err:.1f}mm, 지금 {[round(v, 1) for v in now[:3]]}, '
-                           f'NOT REACHABLE일 수 있음)')
+        msg = (f'목표까지 못 감 (차이 {err:.1f}mm, 지금 {[round(v, 1) for v in now[:3]]}, '
+               f'NOT REACHABLE일 수 있음)')
+        if check:
+            raise RuntimeError(msg)
+        log(f'  [경고] {msg} -> 그대로 계속')
 
 
 def tilt_ry(deg: float, log=print) -> None:
@@ -376,7 +382,7 @@ def tilt_ry(deg: float, log=print) -> None:
     tilt_base('y', deg, log=log)
 
 
-def tilt_base(axis: str, deg: float, log=print) -> None:
+def tilt_base(axis: str, deg: float, log=print, check: bool = True) -> None:
     """그리퍼 끝 위치 그대로 베이스 axis('x'/'y'/'z')축으로 deg만큼 돌리기 (10도/s). 못 가면 예외.
 
     그리퍼가 +X를 볼 때: rx = 판재를 좌우로 눕히기(롤), ry = 앞쪽 숙이기/들기(피치), rz = 좌우로 돌리기(요).
@@ -388,7 +394,9 @@ def tilt_base(axis: str, deg: float, log=print) -> None:
     now = list(get_current_posx()[0])
     err = max(abs(now[i] - target[i]) for i in range(3))
     if err > REACH_TOL_MM:
-        raise RuntimeError(f'못 돌림 (위치 차이 {err:.1f}mm, NOT REACHABLE일 수 있음)')
+        if check:
+            raise RuntimeError(f'못 돌림 (위치 차이 {err:.1f}mm, NOT REACHABLE일 수 있음)')
+        log(f'  [경고] 돌린 뒤 위치 차이 {err:.1f}mm -> 그대로 계속')
 
 
 def rack_layer_now() -> int | None:
@@ -444,7 +452,12 @@ def exit_rack(layer: int | None = None, log=print) -> bool:
     """
     if layer is None:
         layer = rack_layer_now()
-    steps = poses.RACK_EXIT_STEPS.get(layer) if layer is not None else None
+        if layer is None:
+            # 적재대에서 잡고 든 위치가 아니면 어디로 뺄지 모름 -> 움직이지 않고 실패
+            cur = list(get_current_posx()[0])
+            raise RuntimeError(f'적재대에서 잡고 든 위치가 아님 (지금 {[round(v, 1) for v in cur[:3]]}) -> 빼기 안 함. '
+                               f'load1 먼저 할 것')
+    steps = poses.RACK_EXIT_STEPS.get(layer)
     if not steps:
         log(f'[적재대 빼기] {layer}층: 기본 동작 (-X {PULL_OUT_MM:.0f}mm -> 3층 높이로 올리기)')
         pull_out(log=log)
@@ -453,14 +466,15 @@ def exit_rack(layer: int | None = None, log=print) -> bool:
     log(f'[적재대 빼기] {layer}층 순서 {len(steps)}단계: {steps}')
     for i, (kind, val) in enumerate(steps, 1):
         log(f' {i}/{len(steps)} {kind} {val:+g}')
+        # 적재대 빼기는 도착 확인으로 멈추지 않음 (실제 로봇에서 끝 위치가 몇 mm 어긋나도 그냥 계속)
         if kind == 'x':
-            move_rel(dx=val, log=log)
+            move_rel(dx=val, log=log, check=False)
         elif kind == 'y':
-            move_rel(dy=val, log=log)
+            move_rel(dy=val, log=log, check=False)
         elif kind == 'z':
-            move_rel(dz=val, log=log)
-        elif kind == 'ry':
-            tilt_ry(val, log=log)
+            move_rel(dz=val, log=log, check=False)
+        elif kind in ('rx', 'ry', 'rz'):
+            tilt_base(kind[1], val, log=log, check=False)
         else:
             raise ValueError(f'RACK_EXIT_STEPS 단계 종류를 모름: {kind} (x / y / z / ry)')
     global _rack_exit_end
