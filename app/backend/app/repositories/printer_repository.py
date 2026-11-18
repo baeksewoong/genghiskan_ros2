@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import PrinterStatus
-from app.models import Order, Printer
+from app.models import Printer
 from app.repositories.base import lock_for_update
 
 
@@ -26,19 +26,6 @@ class PrinterRepository:
         for slot in slots:
             if slot not in existing:
                 session.add(Printer(slot=slot, status=PrinterStatus.EMPTY, updated_at=now))
-
-    @staticmethod
-    async def get_done_with_order_locked(session: AsyncSession) -> tuple[Printer, Order] | None:
-        """출력 완료(DONE) 프린터 중 가장 먼저 완료된 것을 잠금과 함께 가져온다."""
-        stmt = (
-            select(Printer, Order)
-            .join(Order, Printer.current_order_id == Order.id)
-            .where(Printer.status == PrinterStatus.DONE)
-            .order_by(Order.print_completed_at.asc())
-            .limit(1)
-        )
-        row = (await session.execute(lock_for_update(stmt, session))).first()
-        return (row[0], row[1]) if row is not None else None
 
     @staticmethod
     async def first_empty_locked(session: AsyncSession) -> Printer | None:

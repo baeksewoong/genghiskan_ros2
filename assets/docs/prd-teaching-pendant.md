@@ -1,6 +1,8 @@
 # PRD — 웹 티칭 팬던트(실물 로봇 조그 제어)
 
-작성일: 2026-11-17 · 작성자: 류병옥 (Claude 보조 작성)
+작성일: 2026-11-17 · 작성자: 류병옥 (Claude 보조 작성) · 개정: 2026-11-18
+
+> **2026-11-18 개정:** 가상 로봇(`virtual-robot`, `/ws/bridge`, `DispatcherService`, `RobotState`)이 코드에서 제거됐다. 이 문서에서 가상 로봇을 "무관한 별도 경로"로 언급하던 부분을 정리했고, 웹의 조그 버튼이 가상 로봇 연결 상태(`bridge_connected`)에 묶여 실물 로봇만 쓸 때 항상 잠기던 문제를 고친 내용을 반영했다 (8장). 상호 배제가 UNLOAD 단계를 막지 못하는 문제를 새로 발견해 3장·10장에 적었다.
 
 관련 문서: `assets/docs/prd.md`(기존 전체 PRD), `assets/docs/prd-work-request-sqs.md`(SQS 작업요청 — `robot-commands`/`robot-events` 스키마와 프로듀서 패턴의 기준), `app/ros2_ws/src/sfarm_bridge`·`sfarm_robot`(ROS 2 담당자 작업물)
 
@@ -25,8 +27,8 @@
 
 ### 범위 밖 (이 PRD에서 다루지 않음)
 
-- **연속 누름(press-and-hold) 조그.** SQS 큐 왕복(FIFO 발행 → ROS 2 소비 → 실행 → 이벤트 응답)은 왕복 지연이 있어 "누르고 있는 동안 계속 움직이는" 실시간 제어에는 부적합하다. 이번 PRD는 **클릭 1회 = 스텝 1회 이동**(discrete step jog)만 다룬다. 연속 조그가 꼭 필요하면 SQS가 아닌 별도의 낮은 지연 채널(예: 기존 `/ws/bridge`류 WebSocket 직결)이 필요하며, 이는 후속 과제로 남긴다.
-- **가상 로봇(virtual-robot) 지원.** 이 기능은 실물 로봇 전용이다. `/ws/bridge` 경로나 가상 로봇 프로세스는 건드리지 않는다.
+- **연속 누름(press-and-hold) 조그.** SQS 큐 왕복(FIFO 발행 → ROS 2 소비 → 실행 → 이벤트 응답)은 왕복 지연이 있어 "누르고 있는 동안 계속 움직이는" 실시간 제어에는 부적합하다. 이번 PRD는 **클릭 1회 = 스텝 1회 이동**(discrete step jog)만 다룬다. 연속 조그가 꼭 필요하면 SQS가 아닌 별도의 낮은 지연 채널(예: ROS 2 쪽과 WebSocket 직결)이 필요하며, 이는 후속 과제로 남긴다.
+- **가상 로봇 지원.** 실물 로봇 전용이다 (가상 로봇은 2026-11-18 제거됨).
 - **티칭 포인트 저장/재사용.** 조그로 이동한 위치를 이름 붙여 저장했다가 LOAD/UNLOAD 동작(`poses.py`)에 반영하는 기능은 다루지 않는다 — 이번 기능은 단순 조그 확인/조정 용도이고, 좌표를 실제 동작에 반영하는 것은 여전히 ROS 2 쪽에서 `poses.py`를 직접 수정하는 별도 작업이다.
 - **그리퍼 파지 상태/힘 센서 피드백.** 그리퍼는 열기/닫기 명령만 보낸다 — 기존 `grip_and_check`처럼 `get_tool_force`로 파지 성공 여부를 판정해 화면에 보여주는 것은 다루지 않는다. 명령이 로봇에 전달되어 실행됐는지(성공/실패)만 확인한다.
 - **ROS 2 쪽 실제 조그 실행 구현** (`DSR_ROBOT2` API 호출, 안전 정지 로직 등). 이 PRD는 7장의 SQS 메시지 스키마까지만 정의한다. 실제 모션 명령 구현은 ROS 2 담당자 영역이다.
@@ -42,32 +44,28 @@
 | Cartesian 모드 | X/Y/Z(mm 이동) + Rx/Ry/Rz(deg 회전) 6축 조그 |
 | Joint 모드 | J1~J6 관절 각도(deg)를 축별로 개별 조그 |
 | 스텝 크기 | 버튼 1회 클릭당 이동하는 거리(mm) 또는 각도(deg) |
-| 조그 세션 | 티칭 팬던트가 활성화된 상태. 세션 동안 디스패처의 자동 LOAD/UNLOAD 디스패치는 멈춘다 (3장) |
+| 조그 세션 | 티칭 팬던트가 활성화된 상태. 세션 동안 새 작업요청의 load 발행은 보류된다 (3장) |
 | 그리퍼 열기/닫기 | OnRobot RG2 그리퍼 개폐. 기존 `motions.py`의 `grip_open()`/`grip_close()`(디지털 출력 채널 1/2)와 같은 동작을 단순 버튼으로 호출 |
 
 ## 2. 사용자 흐름 (웹)
 
 1. 운영자가 대시보드에서 **"티칭 팬던트"** 패널(또는 별도 페이지)을 연다.
 2. **활성화** 스위치를 켠다 → 확인 모달("실물 로봇이 움직입니다. 주변에 사람이나 장애물이 없는지 확인하세요") → 확인 시 서버에 활성화 요청.
-   - 서버가 실물 로봇(작업요청) 경로에 진행 중인 `robot_tasks`가 없는 경우에만 활성화를 허용한다(3장 A — 가상 로봇의 `RobotState`가 아니라 작업요청 경로의 활성 작업 여부를 본다). 그렇지 않으면 활성화 실패 + 이유 표시("작업 진행 중이라 조그를 쓸 수 없습니다").
-   - 활성화 성공 시 디스패처는 이 조그 세션이 끝날 때까지 새 LOAD/UNLOAD를 로봇에 보내지 않는다 (3장).
+   - 서버가 진행 중인 `robot_tasks`(LOAD)가 없는 경우에만 활성화를 허용한다(3장 A). 그렇지 않으면 활성화 실패 + 이유 표시("작업 진행 중이라 조그를 쓸 수 없습니다").
+   - 활성화 성공 시 이 조그 세션이 끝날 때까지 새 작업요청은 load를 보내지 않고 WAITING으로 남는다 (3장 B).
 3. **기준 좌표계**(Base/Tool), **모드**(Cartesian/Joint), **스텝 크기**를 고른다.
 4. 방향키 모양 버튼(예: Cartesian 모드면 X+/X-/Y+/Y-/Z+/Z-/Rx+/Rx-/Ry+/Ry-/Rz+/Rz- 12개, Joint 모드면 J1+/J1-…J6+/J6- 12개)을 클릭한다.
    - 클릭 즉시 해당 버튼(들)이 비활성화(또는 로딩 표시)되고, 서버가 이전 스텝의 완료 응답을 받기 전까지는 다음 클릭을 받지 않는다(8.2 "스텝 상호 배제" 참고) — 클릭을 빠르게 여러 번 눌러도 로봇에는 한 번에 한 스텝만 전달된다.
    - 서버 응답(완료/실패)에 따라 현재 위치 표시가 갱신되고 버튼이 다시 활성화된다.
 5. **그리퍼 열기/닫기** 버튼을 클릭하면 방향키와 같은 방식(이전 명령 완료 전 재클릭 무시)으로 그리퍼 개폐 명령이 전달된다. 완료/실패 응답에 따라 그리퍼 상태 표시(열림/닫힘/실패)가 갱신된다.
-6. 운영자가 **비활성화** 스위치를 끄거나 패널을 떠나면 조그 세션이 끝나고, 디스패처의 자동 디스패치가 재개된다.
+6. 운영자가 **비활성화** 스위치를 끄거나 패널을 떠나면 조그 세션이 끝난다. 세션 중 WAITING으로 남은 작업요청은 자동으로 재발행되지 않는다 (10장).
 7. **정지** 버튼은 진행 중인 스텝(조그 또는 그리퍼)에 대해 취소/정지를 요청한다 (8.4 참고 — SQS 특성상 "이미 발행된 명령"을 취소하는 데는 한계가 있음을 사용자에게 알려야 한다).
 
 ## 3. 작업요청(실물 로봇) 경로와의 상호 배제
 
-**(2026-11-17 수정 — 구현 착수 전 코드를 다시 확인하고 바로잡음. 아래가 맞는 설계이고, 이전 초안의 "`DispatcherService`/`RobotState`를 본다"는 내용은 틀렸다.)**
+로봇은 작업요청 경로(`WorkRequestService` → `robot-commands` SQS)로만 움직이며, 이 경로에는 "로봇이 쉬고 있는가"를 보는 루프가 없다 — 요청이 오면 그 자리에서 명령을 발행한다. 그래서 조그 세션과 작업요청이 서로를 막는 체크를 양쪽에 둔다.
 
-이 기능은 1장에서 확정한 대로 **실물 로봇(`WorkRequestService` → `robot-commands` SQS 경로)만** 대상으로 한다. `assets/docs/prd.md` 3장의 `DispatcherService`/`runtime.robot_state`/`RobotTaskRepository.get_active_locked()`는 **가상 로봇(`/ws/bridge`) 전용**이며, 실제로 `get_active_locked()`는 `start_pos_id IS NULL`인 행만 보도록 명시적으로 작업요청(SQS) 경로를 걸러낸다(`app/backend/app/repositories/robot_task_repository.py` 주석 참고). 즉 조그 세션을 `DispatcherService`가 보게 만들어도 **가상 로봇만 멈추고 실물 로봇은 전혀 막지 못한다** — 이전 초안의 설계 메모는 대상을 잘못 짚었다.
-
-또한 실물 로봇(작업요청) 경로는 가상 로봇처럼 "로봇이 IDLE일 때 재평가하는 루프"가 아니다. `WorkRequestService.create()`(`app/backend/app/services/work_request_service.py`)는 요청이 오면 그 자리에서 베드·프린터만 확인해 **로봇이 실제로 쉬고 있는지는 전혀 보지 않고** 즉시 LOAD를 SQS로 발행한다. 지금은 이 경로에 "로봇 사용 중" 개념이 아예 없다.
-
-올바른 상호 배제는 아래 두 방향 모두 새로 추가해야 한다.
+상호 배제는 아래 두 방향으로 구현돼 있다.
 
 ```
 (A) 조그 세션 활성화 요청
@@ -83,7 +81,13 @@
        └─ 비활성 상태면: 기존 로직대로 진행
 ```
 
-**설계 메모:** (A)를 위해 `RobotTaskRepository`에 "실물 로봇 경로의 활성 작업"을 찾는 메서드(예: `get_active_real_robot_task_locked` — `status IN ACTIVE_TASK_STATUSES AND start_pos_id IS NOT NULL`)를 새로 추가해야 한다. 기존 `get_active_locked()`(가상 로봇 전용, `start_pos_id IS NULL`)는 건드리지 않는다. (B)는 `WorkRequestService.create()`의 베드/프린터 확인 로직 바로 다음에 조그 세션 체크를 끼워 넣는 형태가 될 것이다 — 이 역시 기존 핵심 모듈(작업요청 경로)을 건드리는 변경이므로 10장 미결 사항에 "구현 전 재확인" 항목으로 남긴다.
+**구현:** (A)는 `RobotTaskRepository.get_active_real_robot_task_locked`(`status IN (DISPATCHED, RUNNING) AND start_pos_id IS NOT NULL`), (B)는 `WorkRequestService.create()`의 베드 확인보다 앞에 둔 `TeachingPendantService.is_session_active()` 체크다.
+
+**알려진 빈틈 — UNLOAD 단계 (2026-11-18 발견, 미해결):** `robot_tasks`에는 LOAD만 기록되고 unload1/unload2는 기록되지 않는다. 그래서
+- (A) 로봇이 unload1/unload2를 수행 중이어도 조그 세션 활성화가 허용된다.
+- (B) 조그 세션 중에도 출력 타이머가 끝나면 unload1이, 수령하기·success_unload1 이후에는 unload2가, success_load1 이후에는 load2가 그대로 발행된다. (B) 체크는 작업요청(load) 시점에만 있다.
+
+실물 로봇이 조그 중에 다른 명령을 받을 수 있으므로 안전상 막아야 한다. 해결 방향은 10장 참고.
 
 참고로 이 두 체크는 **완전한 레이스 방지를 보장하지 않는다** — (A)와 (B) 사이, 또는 (B)의 확인과 실제 SQS produce 사이에 시간차가 있다. 엄밀한 동시성 보호가 필요하면 기존 `SELECT ... FOR UPDATE` 패턴(작업요청 PRD 9장)과 같은 잠금을 조그 세션 상태에도 적용해야 하는데, 세션 상태를 DB가 아니라 런타임 메모리에 두기로 했으므로(5장) 이 레이스는 낮은 빈도의 엣지 케이스로 남겨두고 10장 미결 사항에 적어둔다.
 
@@ -98,7 +102,7 @@
 | TP-05 | 스텝 크기 선택 | Cartesian: 선형(mm)/회전(deg) 프리셋, Joint: deg 프리셋. 최대값 상한 적용(9장) | P0 |
 | TP-06 | 방향키 조그 | 버튼 클릭 1회 = 1스텝. 이전 스텝 완료 전 재클릭 무시(8.2) | P0 |
 | TP-07 | 현재 위치 표시 | 완료 이벤트 수신 시 posx/posj 값 갱신 표시 | P0 |
-| TP-08 | 로봇 상태 표시 | IDLE/BUSY/ERROR/DISCONNECTED 및 조그 세션 소유 여부 표시 | P0 |
+| TP-08 | 상태 표시 | 서버 연결 상태(/ws/client) 및 조그 세션 활성·소유 여부 표시. 로봇과는 SQS로만 통신하므로 별도 "로봇 연결" 상태는 없다 | P0 |
 | TP-09 | 정지 요청 | 진행 중 스텝에 정지 요청(한계는 8.4에 명시해 사용자에게 고지) | P1 |
 | TP-10 | 조그 실패 처리 | `jog_failed` 수신 시 에러 표시, 버튼 재활성화, 세션 유지 | P0 |
 | TP-11 | 세션 타임아웃 | 일정 시간(예: 10초) 내 완료/실패 응답 없으면 타임아웃 에러 + 운영자 확인 요구 | P1 |
@@ -118,7 +122,7 @@
 
 ### 조그 세션 플래그와 신규 리포지토리 메서드
 
-기존 `app/backend/app/enums.py`의 `RobotState`(IDLE/BUSY/ERROR/DISCONNECTED)는 **가상 로봇 전용이라 이 기능과 무관**하다(3장). 조그 세션은 별도의 런타임 플래그(활성 여부 + 소유자)로만 관리하고, `RobotTaskRepository`에 실물 로봇 경로의 활성 작업을 찾는 메서드(`get_active_real_robot_task_locked` 등, `status IN ACTIVE_TASK_STATUSES AND start_pos_id IS NOT NULL`)를 새로 추가해 3장의 (A)/(B) 양방향 체크에 쓴다.
+조그 세션은 런타임 플래그(활성 여부 + 소유자, `app/core/runtime.py`의 `TeachingPendantSession`)로만 관리하고, 3장 (A)는 `RobotTaskRepository.get_active_real_robot_task_locked`로 진행 중 작업을 확인한다.
 
 ## 6. API 명세
 
@@ -235,11 +239,11 @@ ROS 2 쪽 실행은 기존 `motions.py`의 `grip_open()`/`grip_close()`(디지�
 
 | 상황 | 처리 |
 | --- | --- |
-| 활성화 요청 시 로봇 BUSY/작업 진행 중 | 활성화 거부, 이유 표시 |
+| 활성화 요청 시 작업 진행 중 | 활성화 거부, 이유 표시 (UNLOAD 진행 중은 감지 못함 — 3장 빈틈) |
 | 8.2 스텝 상호 배제 | 이전 `jog_id`의 완료/실패 응답 전 새 조그 요청은 서버가 409로 거부. 버튼도 프론트에서 비활성화해 이중 방지 |
 | 세션 타임아웃(TP-11) | 완료/실패 응답이 일정 시간 내 오지 않으면 타임아웃 에러 표시, 운영자가 로봇 상태를 직접 확인하도록 안내. 세션은 자동으로 비활성화하지 않고 운영자 판단에 맡김(로봇이 실제로 움직이고 있을 수 있으므로 섣불리 "비활성화"로 되돌리지 않는다) |
 | 8.4 정지 요청의 한계 | SQS는 이미 큐에 들어가거나 ROS 2가 수신한 명령을 "취소"하는 기본 수단이 없다. `POST /stop`은 **다음 스텝을 보내지 않도록 막는 것**과 ROS 2 쪽에 정지 신호를 전달하는 것까지만 보장하며, 이미 실행 중인 스텝 자체를 중간에 멈추는 것은 ROS 2 쪽 구현(모션 중단 가능 여부)에 달려 있다. 이 한계를 UI에 "정지 요청 중 — 이미 시작된 이동은 완료될 수 있음"처럼 명시해야 한다 |
-| 조그 중 연결 끊김(bridge.connection=false) | 세션 자동 비활성화, 모든 방향키·그리퍼 버튼 비활성화 |
+| 조그 중 서버 연결 끊김(/ws/client) | 모든 방향키·그리퍼 버튼 비활성화 (세션 자체는 서버에 유지). 로봇 쪽 무응답은 TP-11 타임아웃으로 드러난다. 이전에는 버튼이 가상 로봇 연결(`bridge_connected`)에도 묶여 있어 실물 로봇만 쓸 때 항상 잠겨 있었다 — 2026-11-18 수정 |
 | 그리퍼 명령 실패 | `gripper_failed` 수신 시 에러 표시, 버튼 재활성화, 세션 유지 (조그 실패 처리와 동일, TP-10 참고) |
 | 알 수 없는 jog_id/gripper_cmd_id 이벤트(중복 수신 등) | 무시 (기존 PRD 9.5 원칙과 동일) |
 
@@ -249,12 +253,14 @@ ROS 2 쪽 실행은 기존 `motions.py`의 `grip_open()`/`grip_close()`(디지�
 | --- | --- |
 | 스텝 크기 상한 | Cartesian 선형 ≤ 20mm, 회전 ≤ 15deg, Joint ≤ 15deg (과도한 1스텝 이동 방지). 상한값은 ROS 2 담당자와 실측 후 조정 가능 |
 | 속도/가속도 | 조그 전용으로 낮은 기본값 사용 (기존 `motions.py` 기본값 `VELJ=ACCJ=30`, `VELX=ACCX=100`보다 더 낮게 — 예: 그 절반 이하) — 실제 값은 ROS 2 담당자 확인 필요 |
-| 상호 배제 | 조그 세션 중 LOAD/UNLOAD 디스패치 금지(3장), 반대로 LOAD/UNLOAD 진행 중 조그 세션 활성화 금지 |
+| 상호 배제 | 조그 세션 중 LOAD/UNLOAD 발행 금지, 반대로 LOAD/UNLOAD 진행 중 조그 세션 활성화 금지 (현재 UNLOAD 단계와 load2는 미보장 — 3장 빈틈) |
 | 응답 시간 | 스텝 요청 → 완료 이벤트까지 일반적으로 수 초 내 (SQS 왕복 + 실제 이동 시간). 이 지연 때문에 연속 조그는 지원하지 않는다(1장 범위 밖) |
 | 추적성 | 모든 JOG 명령·완료·실패를 `event_logs`에 기록 (work_id 대신 jog_id 사용) |
 | 기본 안전 상태 | 페이지 새로고침·재접속 시 조그 세션은 항상 비활성 상태로 시작 (복원하지 않음) |
 
 ## 10. 미결 사항
+
+- [ ] **UNLOAD 단계 상호 배제 (안전, 우선 처리 필요)** — 3장 "알려진 빈틈". 해결 방향 후보: (1) 세션 활성 중에는 load2/unload1/unload2 발행을 보류하고 세션 종료 시 이어서 발행, (2) 세션 활성화 조건에 "UNLOADING 주문 또는 PRINT_DONE 후 unload1 발행됨" 같은 주문 상태 기반 체크 추가. 어느 쪽이든 서버 쪽 변경만으로 가능하다.
 
 - [ ] **`WorkRequestService.create()`에 조그 상호 배제 체크를 추가하는 구체 방식** (3장 B) — 작업요청 경로의 핵심 메서드를 직접 수정하는 것이 맞는지, 호출 전 별도 가드 레이어를 둘지. 그리고 3장 끝에 적은 레이스(세션 체크와 SQS produce 사이 시간차)를 이번에 손볼지, 엣지 케이스로 남길지.
 - [ ] 조그 이력을 DB에 영속화할지(5장) — 지금은 "런타임 상태 + event_logs"로 충분하다고 제안했으나, 추후 조회/감사 필요성이 생기면 재검토.
@@ -272,15 +278,16 @@ ROS 2 쪽 실행은 기존 `motions.py`의 `grip_open()`/`grip_close()`(디지�
 4. 프론트: 티칭 팬던트 패널(아토믹 디자인 — atoms: 방향키 버튼·그리퍼 버튼, molecules: 축별 +/- 쌍, organisms: 조그패드/기준좌표계 선택/모드 전환/현재위치표시/그리퍼 컨트롤, 통합 패널). 활성화 안전 확인 모달.
 5. 프론트: 스텝 상호 배제(이전 응답 전 버튼 비활성화), 타임아웃·에러 표시.
 6. (ROS 2 담당자 협의) `robot-commands`의 `JOG`/`GRIPPER` 메시지 소비 + `DSR_ROBOT2` 조그 실행·`grip_open()`/`grip_close()` 호출 + `robot-events` 응답 발행.
-7. 통합 테스트: 활성화 거부(작업 중), 정상 조그 1스텝, 조그 실패, 그리퍼 열기/닫기 성공·실패, 타임아웃, 세션 중 디스패처 정지 확인, 세션 비활성화 후 디스패처 재개.
+7. 통합 테스트: 활성화 거부(작업 중), 정상 조그 1스텝, 조그 실패, 그리퍼 열기/닫기 성공·실패, 타임아웃, 세션 중 작업요청 load 보류 확인.
 
 ## 12. 구현 현황 (2026-11-17)
 
 1~5단계(§11)와 7단계(백엔드 단위/API 테스트) 1차 구현 완료. 6단계(ROS 2 쪽 실제 조그/그리퍼 실행)는 범위 밖으로 남아 있다.
 
-- **백엔드**: `enums.py`(`JogSpace`/`JogRefFrame`/`GripperAction` — DB 비영속, 런타임/스키마 전용), `core/runtime.py`(`TeachingPendantSession` dataclass + `teaching_pendant_lock`, DB 테이블 없음), `repositories/robot_task_repository.py`(`get_active_real_robot_task_locked` 신규 — 기존 가상 로봇 전용 `get_active_locked()`는 그대로 둠), `services/teaching_pendant_service.py`(신규 — 세션 활성화/비활성화, 조그/그리퍼 요청, 정지, robot-events 완료/실패 처리, 타임아웃 스윕), `services/work_request_service.py`(`create()`에 조그 세션 체크 추가 — 베드 확인보다 먼저, 활성 중이면 주문 WAITING 유지 후 즉시 반환), `services/sqs_producer_service.py`(`produce_jog_command`/`produce_gripper_command` 추가, `MessageGroupId="jog"`), `services/sqs_consumer_service.py`(`jog_complete`/`jog_failed`/`gripper_complete`/`gripper_failed` 분기 추가), `api/routers/teaching_pendant.py`(신규, 4개 엔드포인트), `schemas.py`(DTO 6종), `main.py`(라우터·타임아웃 스윕 백그라운드 태스크 연결). 신규 테스트 24건(`tests/test_teaching_pendant.py` 17 + `tests/test_teaching_pendant_api.py` 7) 전부 통과, 기존 테스트 포함 전체 49건 통과(`pytest`로 재검증).
+- **백엔드**: `enums.py`(`JogSpace`/`JogRefFrame`/`GripperAction` — DB 비영속, 런타임/스키마 전용), `core/runtime.py`(`TeachingPendantSession` dataclass + `teaching_pendant_lock`, DB 테이블 없음), `repositories/robot_task_repository.py`(`get_active_real_robot_task_locked` 신규), `services/teaching_pendant_service.py`(신규 — 세션 활성화/비활성화, 조그/그리퍼 요청, 정지, robot-events 완료/실패 처리, 타임아웃 스윕), `services/work_request_service.py`(`create()`에 조그 세션 체크 추가 — 베드 확인보다 먼저, 활성 중이면 주문 WAITING 유지 후 즉시 반환), `services/sqs_producer_service.py`(`produce_jog_command`/`produce_gripper_command` 추가, `MessageGroupId="jog"`), `services/sqs_consumer_service.py`(`jog_complete`/`jog_failed`/`gripper_complete`/`gripper_failed` 분기 추가), `api/routers/teaching_pendant.py`(신규, 4개 엔드포인트), `schemas.py`(DTO 6종), `main.py`(라우터·타임아웃 스윕 백그라운드 태스크 연결). 신규 테스트 24건(`tests/test_teaching_pendant.py` 17 + `tests/test_teaching_pendant_api.py` 7) 전부 통과, 기존 테스트 포함 전체 49건 통과(`pytest`로 재검증).
 - **프론트**: `#/teaching-pendant` 라우트(`App.tsx`), `pages/TeachingPendantPage.tsx` + 신규 템플릿/오거니즘/몰리큘/아톰(`TeachingPendantTemplate`, `TeachingPendantActivationPanel`, `TeachingPendantSafetyModal`, `JogModeControls`, `JogPad`, `GripperControls`, `RobotPoseStatusPanel`, `StopControl`, `JogAxisControl`, `StepButton`), `lib/api.ts`(`enableTeachingPendant`/`disableTeachingPendant`/`sendJog`/`sendGripper`/`stopTeachingPendant` + `TeachingPendantError`), `hooks/useLiveState.ts`(`teaching_pendant.*` 5종 이벤트 처리 + 상태 노출), `types.ts`(조그 관련 타입 추가). `tsc --noEmit`·`vite build` 통과.
-- 가상 로봇 경로(`DashboardPage`/`/ws/bridge`/`DispatcherService`/`RobotState`)와 `app/ros2_ws`는 전혀 건드리지 않음 — 둘 다 이 기능과 무관하다는 3장/1장 결론 그대로 지켰다.
+- `app/ros2_ws`는 건드리지 않음 (ROS 2 담당자 영역).
+- **2026-11-18:** 가상 로봇 제거와 함께 `TeachingPendantPage`의 버튼 비활성화 조건에서 `bridge_connected`/`RobotState` 의존을 없앴다 (세션 활성 + 서버 연결만 본다). `RobotPoseStatusPanel`의 연결 표시는 "서버 연결됨/끊김"만 남겼다.
 
 ### 구현 중 PRD 원문과 다르게 간 부분 / 10장 미결 사항 중 실제로 결정한 것
 

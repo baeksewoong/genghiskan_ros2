@@ -8,13 +8,11 @@ from app.enums import (
     ACTIVE_TASK_STATUSES,
     SHAPE_PRINT_DURATION_SEC,
     BoardStockStatus,
-    EventDirection,
-    OrderSource,
     OrderStatus,
     PrinterStatus,
+    ReceivePosStatus,
     Shape,
     TaskStatus,
-    TaskType,
 )
 
 # SQLite는 ROWID 별칭(AUTOINCREMENT)으로 쓰려면 정확히 INTEGER 타입이 필요하다.
@@ -51,20 +49,20 @@ class Order(Base):
     status: Mapped[OrderStatus] = mapped_column(
         SAEnum(OrderStatus, native_enum=True, length=20), default=OrderStatus.WAITING
     )
-    source: Mapped[OrderSource] = mapped_column(SAEnum(OrderSource, native_enum=True, length=12))
     printer_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # 작업요청(SQS) 경로 전용: unload2로 완성품을 내려놓을 수령대 위치(1/2).
+    receive_pos_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     print_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
-    pickup_delay_sec: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     picked_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
     # ---- 생성 ----
 
     @classmethod
-    def create_new(cls, *, user_id: int, shape: Shape, source: OrderSource, now: datetime) -> "Order":
+    def create_new(cls, *, user_id: int, shape: Shape, now: datetime) -> "Order":
         """새 주문을 WAITING 상태로 만든다. 모양→출력시간 매핑(SHAPE_PRINT_DURATION_SEC)은
         주문 자체의 불변식이므로 엔티티가 책임진다."""
         return cls(
@@ -72,7 +70,6 @@ class Order(Base):
             shape=shape,
             print_duration_sec=SHAPE_PRINT_DURATION_SEC[shape],
             status=OrderStatus.WAITING,
-            source=source,
             created_at=now,
             updated_at=now,
         )
@@ -86,14 +83,10 @@ class Order(Base):
         self.status = OrderStatus.DISPATCHING
         self.updated_at = now
 
-    def mark_loading(self, now: datetime, printer_slot: int | None = None) -> None:
-        """가상 로봇 경로(WAITING→LOADING, 프린터가 이미 확정됨)와 작업요청 경로
-        (DISPATCHING→LOADING, success_load1 수신 시점 — 프린터는 아직 모름) 둘 다
-        이 메서드로 전이한다."""
-        self._ensure_status((OrderStatus.WAITING, OrderStatus.DISPATCHING), "loading으로 전이")
+    def mark_loading(self, now: datetime) -> None:
+        """DISPATCHING→LOADING (success_load1 수신 시점 — 프린터는 아직 모름)."""
+        self._ensure_status((OrderStatus.DISPATCHING,), "loading으로 전이")
         self.status = OrderStatus.LOADING
-        if printer_slot is not None:
-            self.printer_slot = printer_slot
         self.updated_at = now
 
     def assign_printer(self, slot: int, now: datetime) -> None:
@@ -119,6 +112,14 @@ class Order(Base):
         self.status = OrderStatus.UNLOADING
         self.updated_at = now
 
+    def assign_receive_pos(self, receive_pos_id: int, now: datetime) -> None:
+        """작업요청(SQS) 경로 전용: success_unload1 이후(UNLOADING) 비어있는 수령대를
+        배정한다. 이 시점부터 해당 수령대는 점유된 것으로 본다. UNLOADING인데
+        receive_pos_id가 없으면 "로봇이 완성품을 들고 수령대가 비길 기다리는 중"이다."""
+        self._ensure_status((OrderStatus.UNLOADING,), "수령대 배정")
+        self.receive_pos_id = receive_pos_id
+        self.updated_at = now
+
     def mark_ready_for_pickup(self, now: datetime) -> None:
         self._ensure_status((OrderStatus.UNLOADING,), "ready_for_pickup으로 전이")
         self.status = OrderStatus.READY_FOR_PICKUP
@@ -126,29 +127,10 @@ class Order(Base):
         self.updated_at = now
 
     def mark_picked_up(self, now: datetime) -> None:
-        """수령대에서 "수령하기"를 눌렀을 때만 전이한다 — pickup_delay_sec이 지나도
-        자동으로 전이되지 않는다."""
+        """수령대에서 "수령하기"를 눌렀을 때만 전이한다."""
         self._ensure_status((OrderStatus.READY_FOR_PICKUP,), "picked_up으로 전이")
         self.status = OrderStatus.PICKED_UP
         self.picked_up_at = now
-        self.updated_at = now
-
-    def revert_to_waiting(self, now: datetime) -> None:
-        """LOAD 작업이 취소/거부/실패(NO_BOARD)됐을 때 디스패치 이전 상태로 되돌린다."""
-        self._ensure_status((OrderStatus.LOADING,), "waiting으로 복귀")
-        self.status = OrderStatus.WAITING
-        self.printer_slot = None
-        self.updated_at = now
-
-    def revert_to_print_done(self, now: datetime) -> None:
-        """UNLOAD 작업이 취소/거부됐을 때 디스패치 이전 상태로 되돌린다."""
-        self._ensure_status((OrderStatus.UNLOADING,), "print_done으로 복귀")
-        self.status = OrderStatus.PRINT_DONE
-        self.updated_at = now
-
-    def touch(self, now: datetime) -> None:
-        """상태 전이 없이 갱신 시각만 bump한다 (예: GRIP_FAIL 등으로 현재 단계에
-        머무른 채 운영자 확인을 기다릴 때)."""
         self.updated_at = now
 
     def _ensure_status(self, allowed: tuple[OrderStatus, ...], action: str) -> None:
@@ -172,16 +154,10 @@ class Printer(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
     def reserve(self, order_id: int, now: datetime) -> None:
-        """빈 프린터를 특정 주문에 배정한다. 가상 로봇 경로의 LOAD 예약과 작업요청
-        경로의 배치 명령(success_load1 이후) 둘 다 이 메서드를 쓴다."""
+        """빈 프린터를 특정 주문에 배정한다 (success_load1 이후 배치 명령 시점)."""
         self._ensure_status((PrinterStatus.EMPTY,), "reserve")
         self.status = PrinterStatus.RESERVED
         self.current_order_id = order_id
-        self.updated_at = now
-
-    def start_unloading(self, now: datetime) -> None:
-        self._ensure_status((PrinterStatus.DONE,), "unloading 시작")
-        self.status = PrinterStatus.UNLOADING
         self.updated_at = now
 
     def start_printing(self, now: datetime, timer_ends_at: datetime) -> None:
@@ -196,22 +172,12 @@ class Printer(Base):
         self.status = PrinterStatus.DONE
         self.updated_at = now
 
-    def revert_to_done(self, now: datetime) -> None:
-        """UNLOAD 작업이 취소/거부됐을 때 (완성품은 그대로 있으므로) DONE으로
-        되돌린다."""
-        self._ensure_status((PrinterStatus.UNLOADING,), "done으로 복귀")
-        self.status = PrinterStatus.DONE
-        self.updated_at = now
-
-    def clear(self, now: datetime) -> None:
-        """비운다: LOAD 취소(RESERVED→EMPTY) 또는 UNLOAD 성공(UNLOADING→EMPTY) 둘
-        다 이 메서드를 쓴다."""
-        self._ensure_status((PrinterStatus.RESERVED, PrinterStatus.UNLOADING), "empty로 전이")
+    def release_after_unload(self, now: datetime) -> None:
+        """작업요청(SQS) 경로 전용: success_unload1(완성품 꺼내기 성공) 시 DONE→EMPTY."""
+        self._ensure_status((PrinterStatus.DONE,), "unload1 후 비우기")
         self.status = PrinterStatus.EMPTY
         self.current_order_id = None
-        self.updated_at = now
-
-    def touch(self, now: datetime) -> None:
+        self.timer_ends_at = None
         self.updated_at = now
 
     def _ensure_status(self, allowed: tuple[PrinterStatus, ...], action: str) -> None:
@@ -226,15 +192,12 @@ class RobotTask(Base):
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("orders.id"))
-    type: Mapped[TaskType] = mapped_column(SAEnum(TaskType, native_enum=True, length=8))
     # 작업요청(SQS) 경로: dispatch 시점엔 프린터를 모른다 — success_load1 수신 시점에
     # 비로소 정해진다 (그 전까지는 NULL).
     printer_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         SAEnum(TaskStatus, native_enum=True, length=16), default=TaskStatus.DISPATCHED
     )
-    last_phase: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 작업요청(SQS) 경로 전용: LOAD 발행 시 보낸 body 값의 스냅샷 (PRD 5장).
     start_pos_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     sd_pos_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
@@ -245,34 +208,11 @@ class RobotTask(Base):
     # ---- 생성 (디스패치) ----
 
     @classmethod
-    def dispatch_load(cls, *, order_id: int, printer_slot: int, now: datetime) -> "RobotTask":
-        """가상 로봇(/ws/bridge) 경로: 목적지 프린터가 이미 정해진 LOAD 작업."""
-        return cls(
-            order_id=order_id,
-            type=TaskType.LOAD,
-            printer_slot=printer_slot,
-            status=TaskStatus.DISPATCHED,
-            dispatched_at=now,
-        )
-
-    @classmethod
-    def dispatch_unload(cls, *, order_id: int, printer_slot: int, now: datetime) -> "RobotTask":
-        """가상 로봇(/ws/bridge) 경로의 UNLOAD 작업."""
-        return cls(
-            order_id=order_id,
-            type=TaskType.UNLOAD,
-            printer_slot=printer_slot,
-            status=TaskStatus.DISPATCHED,
-            dispatched_at=now,
-        )
-
-    @classmethod
     def dispatch_load_request(cls, *, order_id: int, start_pos_id: int, now: datetime) -> "RobotTask":
         """작업요청(SQS) 경로: 목적지 프린터를 아직 모르는 채로 베드 집기(start_pos_id)만
         디스패치한다 — 프린터는 success_load1 수신 후 assign_printer로 확정한다."""
         return cls(
             order_id=order_id,
-            type=TaskType.LOAD,
             printer_slot=None,
             status=TaskStatus.DISPATCHED,
             start_pos_id=start_pos_id,
@@ -291,23 +231,6 @@ class RobotTask(Base):
         self._ensure_status(ACTIVE_TASK_STATUSES, "succeeded로 전이")
         self.status = TaskStatus.SUCCEEDED
         self.finished_at = now
-
-    def mark_failed(self, now: datetime, error_code: str | None) -> None:
-        self._ensure_status(ACTIVE_TASK_STATUSES, "failed로 전이")
-        self.status = TaskStatus.FAILED
-        self.error_code = error_code
-        self.finished_at = now
-
-    def cancel(self, now: datetime, error_code: str | None = None) -> None:
-        """로봇에 내려보냈지만 거부/연결끊김/전송실패 등으로 취소됐을 때."""
-        self._ensure_status(ACTIVE_TASK_STATUSES, "cancel")
-        self.status = TaskStatus.CANCELED
-        if error_code is not None:
-            self.error_code = error_code
-        self.finished_at = now
-
-    def record_feedback(self, phase: str | None) -> None:
-        self.last_phase = phase
 
     def assign_printer(self, slot: int) -> None:
         """작업요청(SQS) 경로 전용: success_load1 이후 배치 명령(sd_pos_id)의
@@ -362,12 +285,52 @@ class BoardStock(Base):
             )
 
 
+class ReceivePos(Base):
+    """수령대(1, 2)별 현황. 작업요청(SQS) 경로의 unload2 목적지를 고르는 기준이다.
+    EMPTY → RESERVED(unload2 발행) → OCCUPIED(success_unload2) → EMPTY(수령하기)."""
+
+    __tablename__ = "receive_pos"
+
+    pos_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    status: Mapped[ReceivePosStatus] = mapped_column(
+        SAEnum(ReceivePosStatus, native_enum=True, length=16), default=ReceivePosStatus.EMPTY
+    )
+    current_order_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("orders.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+
+    def reserve(self, order_id: int, now: datetime) -> None:
+        """unload2 발행 시점: 로봇이 이 수령대로 완성품을 가져오는 중."""
+        self._ensure_status((ReceivePosStatus.EMPTY,), "reserve")
+        self.status = ReceivePosStatus.RESERVED
+        self.current_order_id = order_id
+        self.updated_at = now
+
+    def occupy(self, now: datetime) -> None:
+        """success_unload2: 완성품이 수령대에 놓였다."""
+        self._ensure_status((ReceivePosStatus.RESERVED,), "occupy")
+        self.status = ReceivePosStatus.OCCUPIED
+        self.updated_at = now
+
+    def release(self, now: datetime) -> None:
+        """수령하기: 손님이 완성품을 가져갔다. 이미 EMPTY면 조용히 무시한다."""
+        if self.status == ReceivePosStatus.EMPTY:
+            return
+        self.status = ReceivePosStatus.EMPTY
+        self.current_order_id = None
+        self.updated_at = now
+
+    def _ensure_status(self, allowed: tuple[ReceivePosStatus, ...], action: str) -> None:
+        if self.status not in allowed:
+            raise InvalidStateTransitionError(
+                f"receive_pos {self.pos_id}은 현재 상태({self.status})에서 '{action}'을 할 수 없습니다"
+            )
+
+
 class EventLog(Base):
     __tablename__ = "event_logs"
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(36), unique=True)
     type: Mapped[str] = mapped_column(String(64))
-    direction: Mapped[EventDirection] = mapped_column(SAEnum(EventDirection, native_enum=True, length=20))
     payload: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))

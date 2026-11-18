@@ -1,20 +1,19 @@
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.enums import (
     AlertReason,
     BoardStockStatus,
+    ReceivePosStatus,
     GripperAction,
     JogRefFrame,
     JogSpace,
-    OrderSource,
     OrderStatus,
     PrinterStatus,
-    RobotState,
     Shape,
-    TaskStatus,
-    TaskType,
 )
 
 
@@ -33,13 +32,12 @@ class OrderOut(BaseModel):
     shape: Shape
     print_duration_sec: int
     status: OrderStatus
-    source: OrderSource
     printer_slot: int | None
+    receive_pos_id: int | None = None
     created_at: datetime
     started_at: datetime | None
     print_completed_at: datetime | None
     ready_at: datetime | None
-    pickup_delay_sec: int | None
     picked_up_at: datetime | None
     updated_at: datetime
 
@@ -66,44 +64,34 @@ class BoardStockOut(BaseModel):
     updated_at: datetime
 
 
-class RobotTaskOut(BaseModel):
+class ReceivePosOut(BaseModel):
+    """수령대(1, 2)별 현황."""
+
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    order_id: int
-    type: TaskType
-    printer_slot: int | None
-    status: TaskStatus
-    last_phase: str | None
-    error_code: str | None
+    pos_id: int
+    status: ReceivePosStatus
+    current_order_id: int | None
+    updated_at: datetime
 
 
-class RobotStatusOut(BaseModel):
-    state: RobotState
-    current_task_id: int | None
-    bridge_connected: bool
+class Unload2CommandRequest(BaseModel):
+    """unload2 SQS 수동 발행 (테스트/ROS 2 연동 확인용)."""
+
+    work_id: int = Field(ge=1)
+    receive_pos_id: Literal[1, 2]
 
 
-class SimulatorSettingsOut(BaseModel):
-    time_scale: float
-
-
-class SimulatorSettingsPatch(BaseModel):
-    time_scale: float | None = Field(default=None, gt=0)
-
-
-class DebugFaultRequest(BaseModel):
-    kind: str  # NO_BOARD | GRIP_FAIL
-    once: bool = True
+class Unload2CommandOut(BaseModel):
+    sent: bool
+    body: dict
 
 
 class StateSnapshot(BaseModel):
     printers: list[PrinterOut]
-    robot: RobotStatusOut
     waiting_orders: list[OrderOut]
     active_orders: list[OrderOut]
     pickup_orders: list[OrderOut]
-    simulator: SimulatorSettingsOut
 
 
 class StatsOut(BaseModel):
@@ -115,8 +103,6 @@ class StatsOut(BaseModel):
 
 class HealthOut(BaseModel):
     db: bool
-    bridge_connected: bool
-    robot_state: RobotState
 
 
 # ---- 티칭 팬던트(실물 로봇 조그 제어) ----

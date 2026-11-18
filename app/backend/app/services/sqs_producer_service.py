@@ -32,6 +32,8 @@ _LOAD_MESSAGE_GROUP_ID = "load"
 # 티칭 팬던트(조그/그리퍼) 전용 그룹 — LOAD/UNLOAD와 분리한다 (PRD:
 # assets/docs/prd-teaching-pendant.md 7장).
 _JOG_MESSAGE_GROUP_ID = "jog"
+# UNLOAD2 수령대 위치 — 수령대는 1번/2번 두 곳.
+_RECEIVE_POS_IDS = frozenset({1, 2})
 
 
 @lru_cache(maxsize=1)
@@ -49,11 +51,15 @@ async def _broadcast_sqs_event(event_type: str, data: dict) -> None:
 
 class SqsProducerService:
     @staticmethod
-    async def produce_load_command(work_id: int, start_pos_id: int) -> bool:
+    async def produce_load_command(work_id: int, start_pos_id: int, retry_token: str | None = None) -> bool:
         """robot-commands에 LOAD(집기) 명령을 보낸다. 이 시점엔 목적지 프린터를
-        모른다 — success_load1 수신 후 produce_place_command로 따로 보낸다."""
+        모른다 — success_load1 수신 후 produce_place_command로 따로 보낸다.
+        재시도일 때는 retry_token을 넘겨야 FIFO 중복 제거(5분)에 걸려 버려지지 않는다."""
         return await SqsProducerService._send(
-            work_id, {"work_id": work_id, "start_pos_id": start_pos_id}, dedup_prefix="load"
+            work_id,
+            {"work_id": work_id, "start_pos_id": start_pos_id},
+            dedup_prefix="load",
+            retry_token=retry_token,
         )
 
     @staticmethod
@@ -67,13 +73,31 @@ class SqsProducerService:
         )
 
     @staticmethod
-    async def produce_unload_command(work_id: int, sd_pos_id: int) -> bool:
+    async def produce_unload_command(work_id: int, sd_pos_id: int, retry_token: str | None = None) -> bool:
         """출력 타이머 완료(PRINT_DONE) 시, 완성품이 놓인 프린터 위치를 목적지로
-        하는 수령(UNLOAD) 명령을 robot-commands에 보낸다."""
+        하는 수령(UNLOAD) 명령을 robot-commands에 보낸다. 재시도일 때는 retry_token을
+        넘긴다(produce_load_command 참고)."""
         return await SqsProducerService._send(
             work_id,
             {"work_id": work_id, "sd_pos_id": sd_pos_id, "type": "unload1"},
             dedup_prefix="unload",
+            retry_token=retry_token,
+        )
+
+    @staticmethod
+    async def produce_unload2_command(work_id: int, receive_pos_id: int, retry_token: str | None = None) -> bool:
+        """success_unload1(프린터에서 완성품 집기 성공) 이후, 완성품을 내려놓을
+        수령대 위치(receive_pos_id: 1 또는 2)를 담은 UNLOAD2 명령을 robot-commands에
+        보낸다. 같은 work_id의 unload1과 겹치지 않도록 dedup prefix를 분리한다.
+        수동 발행(POST /api/sqs/commands/unload2)처럼 같은 work_id로 여러 번 보낼
+        때는 retry_token을 넘겨야 FIFO 중복 제거(5분)에 걸려 버려지지 않는다."""
+        if receive_pos_id not in _RECEIVE_POS_IDS:
+            raise ValueError(f"receive_pos_id는 {sorted(_RECEIVE_POS_IDS)} 중 하나여야 합니다: {receive_pos_id}")
+        return await SqsProducerService._send(
+            work_id,
+            {"type": "unload2", "work_id": work_id, "receive_pos_id": receive_pos_id},
+            dedup_prefix="unload2",
+            retry_token=retry_token,
         )
 
     @staticmethod
@@ -119,12 +143,15 @@ class SqsProducerService:
         )
 
     @staticmethod
-    async def _send(work_id: int, body: dict, dedup_prefix: str) -> bool:
+    async def _send(work_id: int, body: dict, dedup_prefix: str, retry_token: str | None = None) -> bool:
         """LOAD/UNLOAD(work_id 기반) 전용 얇은 래퍼. 성공하면 True, 큐 미설정이거나
-        전송에 실패하면 False를 반환한다 (호출 측이 트랜잭션을 롤백한다)."""
+        전송에 실패하면 False를 반환한다 (호출 측이 트랜잭션을 롤백한다).
+        retry_token이 있으면 dedup id 뒤에 붙여, 같은 work_id의 재전송이 첫 전송의
+        중복으로 취급돼 버려지지 않게 한다."""
+        dedup_id = f"{dedup_prefix}-{work_id}" + (f"-{retry_token}" if retry_token else "")
         return await SqsProducerService._send_raw(
             message_group_id=_LOAD_MESSAGE_GROUP_ID,
-            dedup_id=f"{dedup_prefix}-{work_id}",
+            dedup_id=dedup_id,
             body=body,
             log_extra={"work_id": work_id},
         )

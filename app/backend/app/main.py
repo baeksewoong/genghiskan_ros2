@@ -6,21 +6,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers import (
     board_stock,
-    debug,
+    receive_pos,
     health,
     orders,
-    simulator,
     sqs,
     state,
     stats,
     teaching_pendant,
     work_requests,
 )
-from app.api.ws import bridge_ws, client_ws
+from app.api.ws import client_ws
 from app.core.bootstrap import ensure_seed_data
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
-from app.services.dispatcher_service import DispatcherService
 from app.services.sqs_consumer_service import SqsConsumerService
 from app.services.teaching_pendant_service import TeachingPendantService
 from app.services.timer_service import TimerService
@@ -42,9 +40,6 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(TeachingPendantService.sweep_loop()),
     ]
 
-    # 서버 재시작 복구: DB 상태 기준으로 즉시 한 번 평가한다 (로봇이 아직 연결 전이면 no-op).
-    await DispatcherService.run_cycle()
-
     yield
 
     for task in background_tasks:
@@ -64,14 +59,12 @@ app.add_middleware(
 
 app.include_router(orders.router)
 app.include_router(state.router)
-app.include_router(simulator.router)
-app.include_router(debug.router)
 app.include_router(stats.router)
 app.include_router(health.router)
 app.include_router(work_requests.router)
 app.include_router(board_stock.router)
+app.include_router(receive_pos.router)
 app.include_router(sqs.router)
 app.include_router(teaching_pendant.router)
 
 app.include_router(client_ws.router)
-app.include_router(bridge_ws.router)

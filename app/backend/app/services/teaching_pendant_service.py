@@ -5,8 +5,7 @@ PRD: assets/docs/prd-teaching-pendant.md.
 로만 관리한다 (PRD 5장) — 서버가 재시작되면 항상 비활성 상태로 시작한다.
 
 작업요청(WorkRequestService, 실물 로봇 SQS 경로)과의 상호 배제는 PRD 3장을 그대로
-따른다. `DispatcherService`/`RobotState`/`/ws/bridge`(가상 로봇 경로)는 이 기능과
-무관하다 — 건드리지 않는다:
+따른다:
 
   (A) 조그 세션 활성화·조그 요청·그리퍼 요청마다, 실물 로봇 경로에 진행 중인
       robot_tasks가 있는지 RobotTaskRepository.get_active_real_robot_task_locked로

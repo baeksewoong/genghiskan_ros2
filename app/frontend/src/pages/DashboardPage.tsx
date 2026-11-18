@@ -4,15 +4,32 @@ import { OrderForm } from "../components/organisms/OrderForm";
 import { BoardStockPanel } from "../components/organisms/BoardStockPanel";
 import { BoardStockRefillModal } from "../components/organisms/BoardStockRefillModal";
 import { LoadPickFailedModal } from "../components/organisms/LoadPickFailedModal";
-import { PickupPanel } from "../components/organisms/PickupPanel";
+import { UnloadPickFailedModal } from "../components/organisms/UnloadPickFailedModal";
+import { ReceivePosFullModal } from "../components/organisms/ReceivePosFullModal";
+import { ReceivePosPanel } from "../components/organisms/ReceivePosPanel";
 import { PrinterPanel } from "../components/organisms/PrinterPanel";
 import { useLiveState } from "../hooks/useLiveState";
 import { api, WorkRequestError } from "../lib/api";
 import type { Shape } from "../types";
 
 export function DashboardPage() {
-  const { alert, setAlert, loadFailedAlert, setLoadFailedAlert, boardStock, snapshot } = useLiveState();
+  const {
+    alert,
+    setAlert,
+    loadFailedAlert,
+    setLoadFailedAlert,
+    unloadFailedAlert,
+    setUnloadFailedAlert,
+    receivePosFullAlert,
+    setReceivePosFullAlert,
+    boardStock,
+    receivePos,
+    snapshot,
+  } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
+
+  // 수령대 칸에 올라간 주문 상세 조회용: 이동 중(UNLOADING)은 active, 수령 대기는 pickup에 있다.
+  const receiveOrders = [...(snapshot?.active_orders ?? []), ...(snapshot?.pickup_orders ?? [])];
 
   const handleOrder = async (customerName: string, shape: Shape) => {
     try {
@@ -52,16 +69,29 @@ export function DashboardPage() {
     }
   };
 
+  const handleRetryUnload = async (workId: number) => {
+    // handleRetryLoad와 동일: 재전송이 실패해도 모달은 닫고 콘솔에 남긴다.
+    try {
+      await api.retryUnload(workId);
+    } catch (e) {
+      console.error("UNLOAD 재전송 실패:", e);
+    } finally {
+      setUnloadFailedAlert(null);
+    }
+  };
+
   return (
     <DashboardTemplate
       orderForm={<OrderForm onOrder={handleOrder} error={orderError} />}
       boardStock={<BoardStockPanel slots={boardStock} />}
       printers={<PrinterPanel printers={snapshot?.printers ?? null} />}
-      pickup={<PickupPanel orders={snapshot?.pickup_orders ?? null} onPickUp={handlePickUp} />}
+      receivePos={<ReceivePosPanel positions={receivePos} orders={receiveOrders} onPickUp={handlePickUp} />}
       modal={
         <>
           <BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />
           <LoadPickFailedModal alert={loadFailedAlert} onConfirm={handleRetryLoad} />
+          <UnloadPickFailedModal alert={unloadFailedAlert} onConfirm={handleRetryUnload} />
+          <ReceivePosFullModal alert={receivePosFullAlert} onClose={() => setReceivePosFullAlert(null)} />
         </>
       }
     />
