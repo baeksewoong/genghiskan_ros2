@@ -3,7 +3,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.database import AsyncSessionLocal
 from app.core.events import send_envelope_to
 from app.core.runtime import runtime
-from app.enums import EventDirection
 from app.services.state_service import StateService
 
 router = APIRouter()
@@ -21,7 +20,6 @@ async def client_websocket(websocket: WebSocket) -> None:
                 websocket,
                 "state.snapshot",
                 snapshot.model_dump(mode="json"),
-                EventDirection.SERVER_TO_WEB,
             )
             await session.commit()
 

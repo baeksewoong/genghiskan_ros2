@@ -8,7 +8,6 @@ const STATUS_LABEL: Record<PrinterStatus, string> = {
   RESERVED: "배치 대기",
   PRINTING: "출력중",
   DONE: "출력 완료",
-  UNLOADING: "빼내는 중",
 };
 
 const STATUS_VARIANT: Record<PrinterStatus, "ok" | "bad" | "neutral"> = {
@@ -16,7 +15,6 @@ const STATUS_VARIANT: Record<PrinterStatus, "ok" | "bad" | "neutral"> = {
   RESERVED: "neutral",
   PRINTING: "neutral",
   DONE: "ok",
-  UNLOADING: "neutral",
 };
 
 interface PrinterPanelProps {

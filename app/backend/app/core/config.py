@@ -12,14 +12,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "mysql+aiomysql://printshop:printshop@localhost:3306/printshop"
-    bridge_token: str = "change-me-dev-token"
     cors_origins: str = "http://localhost:5173"
 
-    task_timeout_sec: int = 120
-    default_time_scale: float = 1.0
-
     timer_sweep_interval_sec: float = 0.5
-    bridge_heartbeat_timeout_sec: float = 10.0
 
     # 작업요청(SQS) 경로 전용 (PRD: assets/docs/prd-work-request-sqs.md 7장).
     # 기본값은 빈 문자열 — 설정하지 않으면 produce/consume 모두 조용히 비활성화된다.

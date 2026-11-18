@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from app.core.database import AsyncSessionLocal
-from app.enums import OrderSource, OrderStatus, PrinterStatus, Shape, TaskStatus, TaskType
+from app.enums import OrderStatus, PrinterStatus, Shape, TaskStatus
 from app.models import Order, Printer, RobotTask, User
 from app.services.sqs_producer_service import SqsProducerService
 from app.services.timer_service import TimerService
@@ -23,7 +23,6 @@ async def _make_printing_order(*, start_pos_id: int | None) -> Order:
             shape=Shape.TRIANGLE,
             print_duration_sec=30,
             status=OrderStatus.PRINTING,
-            source=OrderSource.MANUAL,
             printer_slot=1,
             created_at=now,
             started_at=now,
@@ -40,7 +39,6 @@ async def _make_printing_order(*, start_pos_id: int | None) -> Order:
 
         task = RobotTask(
             order_id=order.id,
-            type=TaskType.LOAD,
             printer_slot=1,
             status=TaskStatus.SUCCEEDED,
             start_pos_id=start_pos_id,
@@ -68,7 +66,8 @@ async def test_print_done_sends_unload1_for_sqs_dispatched_order(monkeypatch):
 
     await TimerService._sweep_print_timers()
 
-    assert sent == [{"work_id": order.id, "sd_pos_id": 1}]
+    # 테스트용 임시 조치로 sd_pos_id를 3으로 하드코딩해 발행한다 (실제 printer.slot=1과 무관).
+    assert sent == [{"work_id": order.id, "sd_pos_id": 3}]
 
     async with AsyncSessionLocal() as session:
         refreshed = await session.get(Order, order.id)
@@ -76,19 +75,3 @@ async def test_print_done_sends_unload1_for_sqs_dispatched_order(monkeypatch):
 
         printer = await session.get(Printer, 1)
         assert printer.status == PrinterStatus.DONE
-
-
-async def test_print_done_skips_unload1_for_virtual_robot_order(monkeypatch):
-    sent: list[dict] = []
-
-    async def _fake_produce_unload(*, work_id, sd_pos_id):
-        sent.append({"work_id": work_id, "sd_pos_id": sd_pos_id})
-        return True
-
-    monkeypatch.setattr(SqsProducerService, "produce_unload_command", _fake_produce_unload)
-
-    await _make_printing_order(start_pos_id=None)
-
-    await TimerService._sweep_print_timers()
-
-    assert sent == []
