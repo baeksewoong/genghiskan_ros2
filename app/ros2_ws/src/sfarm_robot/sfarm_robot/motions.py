@@ -638,19 +638,23 @@ def unload_move_step(n: int, log=print, linear: bool = False) -> None:
     unload_move_j(f'[{n}] {name}', j, log=log, linear=linear)
 
 
-def unload_move_j(name: str, j, log=print, linear: bool | None = None) -> None:
+def unload_move_j(name: str, j, log=print, linear: bool | None = None,
+                  vel_scale: float = 1.0, acc_scale: float = 1.0) -> None:
     """이름 붙은 posj 좌표로 이동 (베드 빼내기 / 수령대 / 복귀용).
 
-    linear가 None이면 UNLOAD_USE_MOVEL을 따른다. movel은 posj를 fkin으로 posx로 바꿔서 직선 이동."""
+    linear가 None이면 UNLOAD_USE_MOVEL을 따른다. movel은 posj를 fkin으로 posx로 바꿔서 직선 이동.
+    vel_scale / acc_scale: 기본 속도/가속도에 곱하는 비율 (천천히, 부드럽게 가려면 1보다 작게)."""
     if linear is None:
         linear = UNLOAD_USE_MOVEL
     if linear:
+        vel, acc = UNLOAD_VELX * vel_scale, UNLOAD_ACCX * acc_scale
         x = fkin(posj(*j), ref=DR_BASE)
-        log(f'  {name}: movel posj={list(j)} -> posx={[round(float(v), 2) for v in x]}  (vel={UNLOAD_VELX} acc={UNLOAD_ACCX})')
-        movel(x, vel=UNLOAD_VELX, acc=UNLOAD_ACCX)
+        log(f'  {name}: movel posj={list(j)} -> posx={[round(float(v), 2) for v in x]}  (vel={vel:.1f} acc={acc:.1f})')
+        movel(x, vel=vel, acc=acc)
     else:
-        log(f'  {name}: movej posj={list(j)}  (vel={UNLOAD_VELJ} acc={UNLOAD_ACCJ})')
-        movej(posj(*j), vel=UNLOAD_VELJ, acc=UNLOAD_ACCJ)
+        vel, acc = UNLOAD_VELJ * vel_scale, UNLOAD_ACCJ * acc_scale
+        log(f'  {name}: movej posj={list(j)}  (vel={vel:.1f} acc={acc:.1f})')
+        movej(posj(*j), vel=vel, acc=acc)
 
 
 def unload_move_pre(layer: int, log=print) -> None:
