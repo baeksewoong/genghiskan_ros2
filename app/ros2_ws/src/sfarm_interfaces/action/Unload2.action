@@ -1,5 +1,6 @@
 # Goal (input)
 int32 work_id
+int8 receive_pos_id
 ---
 # Result (output)
 bool success

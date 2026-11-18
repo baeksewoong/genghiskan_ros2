@@ -1,2 +1,6 @@
 # Claude Code 로컬 설정/에이전트/스킬 (개인 환경, 공유 저장소에 커밋하지 않음)
 .claude/*
+app/ros2_ws/build/
+app/ros2_ws/install/
+app/ros2_ws/log/
+app/ros2_ws/.vscode/*
