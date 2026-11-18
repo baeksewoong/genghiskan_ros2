@@ -1,6 +1,37 @@
 # Claude Code 로컬 설정/에이전트/스킬 (개인 환경, 공유 저장소에 커밋하지 않음)
 .claude/*
-app/ros2_ws/build/
-app/ros2_ws/install/
-app/ros2_ws/log/
-app/ros2_ws/.vscode/*
+
+# ROS 2 / colcon 빌드·설치·로그 산출물 (루트·하위 워크스페이스 모두 무시)
+build/
+install/
+log/
+
+# Python 캐시·패키징·테스트·가상환경 산출물
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Node / Frontend 빌드·의존성
+node_modules/
+dist/
+
+# 환경 변수 및 로컬 DB / 런타임 파일 (예제 파일 제외)
+.env
+.env.*
+!.env.example
+*.db
+*.db.bak-*
+.run/
+
+# IDE / 에디터 / OS 임시·잠금 파일
+.vscode/
+.idea/
+*.swp
+*.swo
+.~lock.*
+.DS_Store
+Thumbs.db
