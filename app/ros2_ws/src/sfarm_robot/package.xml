@@ -10,6 +10,7 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sfarm_interfaces</exec_depend>
   <exec_depend>dsr_common2</exec_depend>
+  <exec_depend>dsr_msgs2</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
