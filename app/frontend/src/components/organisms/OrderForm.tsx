@@ -24,9 +24,15 @@ export function OrderForm({ onOrder, error }: OrderFormProps) {
   };
 
   return (
-    <section className="panel order-form">
-      <h2>작업요청</h2>
-      <Button onClick={() => setOpen(true)}>작업요청</Button>
+    <section className="order-hero">
+      <span className="order-hero-icon" aria-hidden="true">
+        ✨
+      </span>
+      <h2 className="order-hero-title">나만의 3D 프린트 작업요청</h2>
+      <p className="order-hero-sub">원하는 모양을 고르고 터치 한 번으로 작업을 시작하세요</p>
+      <Button className="order-hero-button" onClick={() => setOpen(true)}>
+        🖨️&nbsp;&nbsp;작업요청 시작하기
+      </Button>
       <OrderModal
         open={open}
         error={error}

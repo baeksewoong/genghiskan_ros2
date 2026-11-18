@@ -1,0 +1,14 @@
+# Goal (입력)
+string gripper_cmd_id
+string action        # "OPEN" | "CLOSE"
+---
+# Result (출력)
+bool success
+string message
+string gripper_cmd_id
+string state          # "OPEN" | "CLOSE" (실행된 동작)
+---
+# Feedback
+builtin_interfaces/Time start_at
+builtin_interfaces/Time end_at
+string gripper_cmd_id
