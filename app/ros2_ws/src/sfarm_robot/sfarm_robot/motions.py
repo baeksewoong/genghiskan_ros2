@@ -39,7 +39,7 @@ from DSR_ROBOT2 import (
     wait,
 )
 
-from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
+from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1, Unload2
 
 from . import poses, unload_poses
 
@@ -711,6 +711,9 @@ def unload_grab_pull(layer: int, log=print) -> bool:
     return False
 
 
+_last_unload_layer: int | None = None
+
+
 def run_unload1(goal: Unload1.Goal, log=print) -> bool:
     """Unload1: 홈 -> 진입전2 -> 작업대(sd_pos_id층) -> 잡고 -X 당겨 턱 걸림 확인.
 
@@ -718,6 +721,7 @@ def run_unload1(goal: Unload1.Goal, log=print) -> bool:
             감지되지 않았으면 원위치 복귀 및 그리퍼 열기 후 False.
     좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
     """
+    global _last_unload_layer
     layer = goal.sd_pos_id
     table = getattr(unload_poses, 'UNLOAD_J', {})
     layers = getattr(unload_poses, 'UNLOAD_LAYER_STEP', {})
@@ -733,6 +737,7 @@ def run_unload1(goal: Unload1.Goal, log=print) -> bool:
     if target_step not in table:
         raise ValueError(f'UNLOAD_J에 {layer}층({target_step}번) 좌표 없음')
 
+    _last_unload_layer = layer
     log(f'[unload1] 작업대 {layer}층')
     for idx, n in enumerate(nums):
         unload_move_step(n, log=log)
@@ -742,6 +747,68 @@ def run_unload1(goal: Unload1.Goal, log=print) -> bool:
     log(f'  언로드{layer} 도착 -> {UNLOAD_ARRIVE_WAIT_SEC:.0f}초 대기 후 잡기')
     wait(UNLOAD_ARRIVE_WAIT_SEC)
     return unload_grab_pull(layer, log=log)
+
+
+def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool:
+    """Unload2: (Unload1로 베드판을 잡은 상태에서) 빼내기 -> 수령대(receive_pos_id) -> 놓기 -> 홈 복귀.
+
+    1) UNLOAD_EXTRACT_STEPS[layer] 순서로 베드 빼내기
+       (UNLOAD_MOVEL_FROM_STEP 이전은 movej, 이후는 UNLOAD_USE_MOVEL에 따라 movel)
+    2) UNLOAD_RECV_J[receive_pos_id] 순서로 수령대 이동 (직전 좌표와 같으면 생략)
+    3) grip_open()으로 수령대에 베드판 놓기
+    4) UNLOAD_RETURN_J 순서로 홈 복귀
+    좌표가 없는 수령대 번호나 추출 경로가 없는 층이면 움직이기 전에 예외 처리된다.
+    """
+    receive_pos_id = goal.receive_pos_id
+    recv_table = getattr(unload_poses, 'UNLOAD_RECV_J', {})
+    if receive_pos_id not in recv_table:
+        raise ValueError(
+            f'UNLOAD_RECV_J에 수령대 {receive_pos_id}번 좌표 없음 (가능: {sorted(recv_table)})'
+        )
+
+    extract_table = getattr(unload_poses, 'UNLOAD_EXTRACT_STEPS', {})
+    target_layer = _last_unload_layer if layer is None else layer
+    if target_layer is None:
+        if len(extract_table) == 1:
+            target_layer = next(iter(extract_table))
+            log(f'[unload2] 직전 unload1 층 정보 없음 -> 유일한 추출 경로({target_layer}층) 사용')
+        else:
+            raise ValueError('직전 unload1 층 정보가 없어 추출 경로를 결정할 수 없음')
+
+    steps = list(extract_table.get(target_layer, []))
+    if not steps:
+        raise ValueError(
+            f'UNLOAD_EXTRACT_STEPS에 {target_layer}층 좌표 없음 (가능: {sorted(extract_table)})'
+        )
+
+    table = getattr(unload_poses, 'UNLOAD_J', {})
+    for n in steps:
+        if n not in table:
+            raise ValueError(f'UNLOAD_J에 {n}번 좌표 없음 (가능: {sorted(table)})')
+
+    return_steps = list(getattr(unload_poses, 'UNLOAD_RETURN_J', []))
+    movel_from = getattr(unload_poses, 'UNLOAD_MOVEL_FROM_STEP', 10)
+
+    log(f'[unload2] 작업대 {target_layer}층 빼내기 -> 수령대 {receive_pos_id}번')
+    for n in steps:
+        linear = UNLOAD_USE_MOVEL and n >= movel_from
+        unload_move_step(n, log=log, linear=linear)
+
+    last_j = table[steps[-1]][1]
+    for name, jj in recv_table[receive_pos_id]:
+        if list(jj) == list(last_j):
+            log(f'  {name}: 지금 위치와 같은 좌표 -> 이동 생략')
+            continue
+        unload_move_j(name, jj, log=log)
+
+    log(f'  수령대{receive_pos_id} 도착 -> 그리퍼 열기 (놓기)')
+    grip_open()
+
+    for name, jj in return_steps:
+        unload_move_j(name, jj, log=log)
+
+    log(f'[unload2] 수령대{receive_pos_id} 전달 후 홈 복귀 완료')
+    return True
 
 
 def run_unload(goal: Unload.Goal, log=print) -> bool:

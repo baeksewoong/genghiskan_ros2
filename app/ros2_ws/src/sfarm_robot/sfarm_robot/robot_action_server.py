@@ -22,7 +22,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 
 
-from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1
+from sfarm_interfaces.action import Load, Load1, Load2, Unload, Unload1, Unload2
 from sfarm_interfaces.srv import Error
 
 
@@ -35,7 +35,7 @@ DR_init.__dsr__model = ROBOT_MODEL
 
 # ---------------------------------------------------------------- 액션 서버
 class RobotActionServer(Node):
-    """/sfarm/load1, /sfarm/load2, /sfarm/unload1, /sfarm/load, /sfarm/unload 액션과 정지 서비스 노드."""
+    """/sfarm/load1, /sfarm/load2, /sfarm/unload1, /sfarm/unload2, /sfarm/load, /sfarm/unload 액션과 정지 서비스 노드."""
 
     def __init__(
         self,
@@ -44,6 +44,7 @@ class RobotActionServer(Node):
         run_load1=None,
         run_load2=None,
         run_unload1=None,
+        run_unload2=None,
         get_current_poses=None,
     ) -> None:
         super().__init__('sfarm_robot_action_server')
@@ -52,6 +53,7 @@ class RobotActionServer(Node):
         self.run_load2 = run_load2
         self.run_unload = run_unload
         self.run_unload1 = run_unload1
+        self.run_unload2 = run_unload2
         self.get_current_poses = get_current_poses
         self.cb_group = ReentrantCallbackGroup()
         # 로봇은 한 번에 하나의 동작만 수행
@@ -79,6 +81,13 @@ class RobotActionServer(Node):
             cancel_callback=self.cancel_callback,
             callback_group=self.cb_group,
         )
+        self.unload2_server = ActionServer(
+            self, Unload2, '/sfarm/unload2',
+            execute_callback=self.execute_unload2,
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback,
+            callback_group=self.cb_group,
+        )
         self.load_server = ActionServer(
             self, Load, '/sfarm/load',
             execute_callback=self.execute_load,
@@ -101,7 +110,7 @@ class RobotActionServer(Node):
         )
 
         self.get_logger().info(
-            'ready: /sfarm/load1, /sfarm/load2, /sfarm/unload1, '
+            'ready: /sfarm/load1, /sfarm/load2, /sfarm/unload1, /sfarm/unload2, '
             '/sfarm/load, /sfarm/unload, /sfarm/load/stop'
         )
 
@@ -149,6 +158,11 @@ class RobotActionServer(Node):
         """Unload1 콜백."""
         self.stop_requested.clear()
         return self._execute(goal_handle, Unload1, None, self.run_unload1, 'unload1')
+
+    def execute_unload2(self, goal_handle):
+        """Unload2 콜백 (빼내기 -> 수령대 receive_pos_id -> 홈 복귀)."""
+        self.stop_requested.clear()
+        return self._execute(goal_handle, Unload2, None, self.run_unload2, 'unload2')
 
     def execute_load(self, goal_handle):
         """Load 콜백."""
@@ -240,6 +254,7 @@ def main(args=None) -> None:
             run_load2,
             run_unload,
             run_unload1,
+            run_unload2,
         )
     except ImportError as e:
         dsr_node.get_logger().error(f'Error importing DSR_ROBOT2 / motions: {e}')
@@ -253,6 +268,7 @@ def main(args=None) -> None:
         run_load1=run_load1,
         run_load2=run_load2,
         run_unload1=run_unload1,
+        run_unload2=run_unload2,
         get_current_poses=get_current_poses,
     )
     executor = MultiThreadedExecutor()
