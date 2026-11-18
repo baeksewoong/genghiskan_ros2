@@ -95,7 +95,9 @@ class SqsProducerService:
             raise ValueError(f"receive_pos_id는 {sorted(_RECEIVE_POS_IDS)} 중 하나여야 합니다: {receive_pos_id}")
         return await SqsProducerService._send(
             work_id,
-            {"type": "unload2", "work_id": work_id, "receive_pos_id": receive_pos_id},
+            # receive_pos_id 하드코딩: 수령대 2번 로봇 동작이 아직 준비되지 않아
+            # 실제 배정값과 무관하게 항상 1번으로 보낸다.
+            {"type": "unload2", "work_id": work_id, "receive_pos_id": 1},
             dedup_prefix="unload2",
             retry_token=retry_token,
         )
