@@ -387,6 +387,8 @@ class SqsEchoNode(Node):
         self._robot_busy_lock = threading.Lock()
         self._robot_busy_event = threading.Event()
         self._active_action_name: str | None = None
+        # load1+load2를 하나의 'LOAD' 묶음, unload1+unload2를 하나의 'UNLOAD' 묶음으로 추적한다.
+        self._active_bundle: tuple[str, int] | None = None
         # long polling은 최대 20초 블로킹하므로 executor와 분리된 스레드에서 실행
         self.worker = threading.Thread(target=self.consume_loop, daemon=True)
         self.worker.start()
@@ -432,25 +434,70 @@ class SqsEchoNode(Node):
         event = getattr(self, '_robot_busy_event', None)
         return isinstance(event, threading.Event) and event.is_set()
 
-    def _try_acquire_robot_busy(self, action_name: str) -> bool:
-        """Mark the robot busy if idle; return False if an action is already active."""
+    def _get_active_bundle(self) -> tuple[str, int] | None:
+        """Return active ('LOAD'|'UNLOAD', work_id) bundle, or None when idle."""
+        event = getattr(self, '_robot_busy_event', None)
+        if not isinstance(event, threading.Event):
+            return None
+        with self._robot_busy_lock:
+            bundle = getattr(self, '_active_bundle', None)
+            return bundle if isinstance(bundle, tuple) and len(bundle) == 2 else None
+
+    def _is_command_allowed_in_bundle(
+        self, command_kind: str | None, work_id: int | None
+    ) -> bool:
+        """Allow only the matching follow-up stage when a LOAD/UNLOAD bundle is active."""
+        bundle = SqsEchoNode._get_active_bundle(self)
+        if bundle is None:
+            return True
+        bundle_kind, active_work_id = bundle
+        if bundle_kind == 'LOAD':
+            return command_kind == 'LOAD2' and work_id == active_work_id
+        if bundle_kind == 'UNLOAD':
+            return command_kind == 'UNLOAD2' and work_id == active_work_id
+        return False
+
+    def _try_acquire_robot_busy(
+        self,
+        action_name: str,
+        bundle_action: str | None = None,
+        work_id: int | None = None,
+    ) -> bool:
+        """Mark the robot busy if idle and compatible with any active bundle."""
         event = getattr(self, '_robot_busy_event', None)
         if not isinstance(event, threading.Event):
             return True
         with self._robot_busy_lock:
             if event.is_set():
                 return False
+            bundle = getattr(self, '_active_bundle', None)
+            if isinstance(bundle, tuple) and len(bundle) == 2:
+                bundle_kind, active_work_id = bundle
+                if bundle_kind == 'LOAD' and (
+                    bundle_action != 'LOAD2' or work_id != active_work_id
+                ):
+                    return False
+                if bundle_kind == 'UNLOAD' and (
+                    bundle_action != 'UNLOAD2' or work_id != active_work_id
+                ):
+                    return False
+            elif bundle_action == 'LOAD' and work_id is not None:
+                self._active_bundle = ('LOAD', work_id)
+            elif bundle_action == 'UNLOAD1' and work_id is not None:
+                self._active_bundle = ('UNLOAD', work_id)
             self._active_action_name = action_name
             event.set()
             return True
 
-    def _clear_robot_busy(self) -> None:
-        """Clear the in-flight robot busy state once an action completes or fails to start."""
+    def _clear_robot_busy(self, *, clear_bundle: bool = True) -> None:
+        """Clear in-flight action busy state and optionally close the active bundle."""
         event = getattr(self, '_robot_busy_event', None)
         if not isinstance(event, threading.Event):
             return
         with self._robot_busy_lock:
             self._active_action_name = None
+            if clear_bundle:
+                self._active_bundle = None
             event.clear()
 
     def _wait_for_action_done(self, action_name: str, done_event: threading.Event) -> bool:
@@ -519,6 +566,11 @@ class SqsEchoNode(Node):
 
         jog_kind, jog_fields = parse_jog_or_gripper_command(command)
         if jog_kind == 'JOG':
+            if not SqsEchoNode._is_command_allowed_in_bundle(self, 'JOG', None):
+                self.get_logger().warning(
+                    f'bundle {SqsEchoNode._get_active_bundle(self)} in progress; deferring JOG'
+                )
+                return False
             result = self.execute_jog(jog_fields)
             if result is None:
                 self.get_logger().warning(
@@ -531,6 +583,11 @@ class SqsEchoNode(Node):
             return True
 
         if jog_kind == 'GRIPPER':
+            if not SqsEchoNode._is_command_allowed_in_bundle(self, 'GRIPPER', None):
+                self.get_logger().warning(
+                    f'bundle {SqsEchoNode._get_active_bundle(self)} in progress; deferring GRIPPER'
+                )
+                return False
             result = self.execute_gripper(jog_fields)
             if result is None:
                 self.get_logger().warning(
@@ -544,10 +601,25 @@ class SqsEchoNode(Node):
 
         action_kind, goal_fields = parse_task_command(command)
         if action_kind is None or goal_fields is None:
+            if not SqsEchoNode._is_command_allowed_in_bundle(self, None, None):
+                self.get_logger().warning(
+                    f'bundle {SqsEchoNode._get_active_bundle(self)} in progress; '
+                    'deferring unknown command'
+                )
+                return False
             event = self.build_event(command)
             if self.produce(event):
                 self.delete(message)
             return True
+
+        if not SqsEchoNode._is_command_allowed_in_bundle(
+            self, action_kind, goal_fields.get('work_id')
+        ):
+            self.get_logger().warning(
+                f'bundle {SqsEchoNode._get_active_bundle(self)} in progress; '
+                f'deferring {action_kind} work_id={goal_fields.get("work_id")}'
+            )
+            return False
 
         if action_kind == 'LOAD':
             result, event_sent = self.execute_load1(
@@ -632,7 +704,9 @@ class SqsEchoNode(Node):
             raise ValueError(f'Unsupported action kind for execute_ros_action: {action_kind}')
         client = self.unload_client
         action_name = '/sfarm/unload'
-        if not self._try_acquire_robot_busy(action_name):
+        if not self._try_acquire_robot_busy(
+            action_name, bundle_action='UNLOAD', work_id=goal_fields['work_id']
+        ):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping {action_name}'
             )
@@ -712,7 +786,7 @@ class SqsEchoNode(Node):
         handle_message()가 SQS 메시지를 지우지 않아 다음 polling에서 재시도된다
         (PRD 3.1/7장 - 실패를 삼키지 않는다는 기존 원칙과 일치).
         """
-        if not self._try_acquire_robot_busy('/sfarm/jog'):
+        if not self._try_acquire_robot_busy('/sfarm/jog', bundle_action='JOG'):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping /sfarm/jog'
             )
@@ -785,7 +859,7 @@ class SqsEchoNode(Node):
 
         execute_jog와 완전히 같은 모양(execute_load1 패턴 복제).
         """
-        if not self._try_acquire_robot_busy('/sfarm/gripper'):
+        if not self._try_acquire_robot_busy('/sfarm/gripper', bundle_action='GRIPPER'):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping /sfarm/gripper'
             )
@@ -926,7 +1000,9 @@ class SqsEchoNode(Node):
         sd_pos_id: int | None = None,
     ) -> tuple[Load1.Result | None, bool]:
         """Send a Load1 goal to /sfarm/load1 and handle success/failure callbacks."""
-        if not self._try_acquire_robot_busy('/sfarm/load1'):
+        if not self._try_acquire_robot_busy(
+            '/sfarm/load1', bundle_action='LOAD', work_id=work_id
+        ):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping /sfarm/load1'
             )
@@ -1024,7 +1100,7 @@ class SqsEchoNode(Node):
             done_event.set()
             return
 
-        self._clear_robot_busy()
+        self._clear_robot_busy(clear_bundle=not bool(result.success))
         holder['result'] = result
         holder['event_sent'] = self.handle_load1_result(result, work_id, sd_pos_id)
         done_event.set()
@@ -1070,14 +1146,16 @@ class SqsEchoNode(Node):
         sd_pos_id: int,
     ) -> tuple[Load2.Result | None, bool]:
         """Send a Load2 goal to /sfarm/load2 and handle success/failure callbacks."""
-        if not self._try_acquire_robot_busy('/sfarm/load2'):
+        if not self._try_acquire_robot_busy(
+            '/sfarm/load2', bundle_action='LOAD2', work_id=work_id
+        ):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping /sfarm/load2'
             )
             return None, False
 
         if not self.load2_client.wait_for_server(timeout_sec=5.0):
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             self.get_logger().error('/sfarm/load2 action server is not available')
             return None, False
 
@@ -1101,7 +1179,7 @@ class SqsEchoNode(Node):
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             self.get_logger().error(f'/sfarm/load2 send_goal_async failed: {exc}')
             return None, False
 
@@ -1131,13 +1209,13 @@ class SqsEchoNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/load2 goal error: {exc}')
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             done_event.set()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warning('/sfarm/load2 goal was rejected')
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             done_event.set()
             return
 
@@ -1201,7 +1279,9 @@ class SqsEchoNode(Node):
         sd_pos_id: int,
     ) -> tuple[Unload1.Result | None, bool]:
         """Send an Unload1 goal to /sfarm/unload1 and handle success/failure callbacks."""
-        if not self._try_acquire_robot_busy('/sfarm/unload1'):
+        if not self._try_acquire_robot_busy(
+            '/sfarm/unload1', bundle_action='UNLOAD1', work_id=work_id
+        ):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping /sfarm/unload1'
             )
@@ -1295,7 +1375,7 @@ class SqsEchoNode(Node):
             done_event.set()
             return
 
-        self._clear_robot_busy()
+        self._clear_robot_busy(clear_bundle=not bool(result.success))
         holder['result'] = result
         holder['event_sent'] = self.handle_unload1_result(result, work_id)
         done_event.set()
@@ -1340,14 +1420,16 @@ class SqsEchoNode(Node):
         receive_pos_id: int,
     ) -> tuple[Unload2.Result | None, bool]:
         """Send an Unload2 goal to /sfarm/unload2 and handle success/failure callbacks."""
-        if not self._try_acquire_robot_busy('/sfarm/unload2'):
+        if not self._try_acquire_robot_busy(
+            '/sfarm/unload2', bundle_action='UNLOAD2', work_id=work_id
+        ):
             self.get_logger().warning(
                 f'robot is busy ({self._active_action_name}); skipping /sfarm/unload2'
             )
             return None, False
 
         if not self.unload2_client.wait_for_server(timeout_sec=5.0):
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             self.get_logger().error('/sfarm/unload2 action server is not available')
             return None, False
 
@@ -1372,7 +1454,7 @@ class SqsEchoNode(Node):
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             self.get_logger().error(f'/sfarm/unload2 send_goal_async failed: {exc}')
             return None, False
 
@@ -1402,13 +1484,13 @@ class SqsEchoNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/unload2 goal error: {exc}')
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             done_event.set()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warning('/sfarm/unload2 goal was rejected')
-            self._clear_robot_busy()
+            self._clear_robot_busy(clear_bundle=False)
             done_event.set()
             return
 
