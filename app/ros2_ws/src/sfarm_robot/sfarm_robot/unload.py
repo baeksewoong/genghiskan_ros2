@@ -8,6 +8,7 @@
   ros2 run sfarm_robot unload            # 메뉴에서 골라서 실행 (반복)
   ros2 run sfarm_robot unload step 1     # 바로 실행: 1번 좌표(홈)로 이동
   ros2 run sfarm_robot unload run        # 한 단계씩 (Enter 진행 / b 전 단계 / g 잡기 / r 놓기 / q 멈춤). 진입전2에서 언로드 층 3/2/1 선택
+  ros2 run sfarm_robot unload extract 9  # [테스트] 베드 빼내기를 9번부터 (베드판 잡은 상태에서). 11번 -> 수령대 선택 -> 복귀까지
   ros2 run sfarm_robot unload back       # 지금 단계에서 한 단계씩 거꾸로 (back 3 = 3번까지만)
   ros2 run sfarm_robot unload pose      # 현재 위치 좌표 출력
 
@@ -52,7 +53,7 @@ UNLOAD_PULL_REACH_TOL_MM = 3.0      # 위치 제어 이동 후 목표에 이만�
 
 
 # ---------------------------------------------------------------- 언로드 동작
-# 좌표는 poses.UNLOAD_J = {번호: (이름, posj)}. 동작은 번호 하나씩 만들어 step N으로 테스트한다.
+# 좌표는 unload_poses.UNLOAD_J = {번호: (이름, posj)}. 동작은 번호 하나씩 만들어 step N으로 테스트한다.
 # TODO: 좌표가 모이면 한 번에 이어서 실행하는 run 동작으로 묶고, 완성되면 motions.run_unload()로 옮긴다.
 def move_step(motions, n: int) -> None:
     """UNLOAD_J[n] 좌표로 관절 이동 (느린 속도)."""
@@ -60,7 +61,7 @@ def move_step(motions, n: int) -> None:
 
 
 def list_steps(motions) -> None:
-    for n, (name, j) in sorted(motions.poses.UNLOAD_J.items()):
+    for n, (name, j) in sorted(motions.unload_poses.UNLOAD_J.items()):
         print(f'  {n}. {name:<12} {j}')
 
 
@@ -97,6 +98,96 @@ def gripper_key(motions, ans: str) -> bool:
     return False
 
 
+def extract_after_grab(motions, layer: int, start: int | None = None) -> bool:
+    """잡기 성공 후 UNLOAD_EXTRACT_STEPS[layer] 좌표를 차례로 이동 (Enter=진행, q=멈춤).
+    끝까지 갔으면 True. 이 층에 이어갈 좌표가 없거나 q로 멈추면 False (층 선택 화면으로 돌아감)."""
+    p = motions.unload_poses
+    table = p.UNLOAD_J
+    steps = list(getattr(p, 'UNLOAD_EXTRACT_STEPS', {}).get(layer, []))
+    if start is not None:
+        steps = [n for n in steps if n >= start]   # 테스트용: 이 번호부터 시작
+    if not steps:
+        return False
+    for n in steps:
+        name, j = table[n]
+        ans = input(f'  [{n}] {name} {j} 로 이동할까요? (Enter=진행, q=멈춤) ').strip().lower()
+        if ans == 'q':
+            print(f'  {n}번 앞에서 멈춤 (베드판 잡은 상태)')
+            return True
+        linear = motions.UNLOAD_USE_MOVEL and n >= getattr(p, 'UNLOAD_MOVEL_FROM_STEP', 10)
+        motions.unload_move_step(n, log=print, linear=linear)
+    print(f'  언로드{layer} 베드 빼내기 끝 (그리퍼는 닫힌 채, 마지막 좌표) -> 수령대로')
+    deliver_and_return(motions, table[steps[-1]][0], table[steps[-1]][1])
+    return True
+
+
+def deliver_and_return(motions, last_name: str, last_j) -> None:
+    """수령대 1/2 선택 -> -1, -2 이동 -> 그리퍼 열기 -> 복귀 경로 (복귀1 -> 진입전2 -> 복귀3 -> 홈).
+
+    테스트용: 수령대로 가는 도중이나 도착한 뒤(그리퍼 열기 전)에 b를 누르면
+    지나온 좌표를 거꾸로 되짚어 11번(선택 전 위치)으로 돌아와 수령대를 다시 고른다."""
+    p = motions.unload_poses
+    recv = getattr(p, 'UNLOAD_RECV_J', {})
+    back = getattr(p, 'UNLOAD_RETURN_J', [])
+    if not recv:
+        return
+    opts = '/'.join(str(k) for k in sorted(recv))
+    while True:
+        # 로봇은 지금 11번(선택 전 위치)에 있다
+        ans = input(f'  갈 수령대 ({opts}) 입력 (g=잡기, r=놓기, q=멈춤) ').strip().lower()
+        if ans == 'q':
+            print('  수령대 앞에서 멈춤 (베드판 잡은 상태)')
+            return
+        if gripper_key(motions, ans):
+            continue
+        if not (ans.isdigit() and int(ans) in recv):
+            print(f'  입력 오류: {opts} 중 하나, g, r, q')
+            continue
+
+        visited = [(last_name, last_j)]   # 지나온 좌표 (맨 앞 = 11번)
+
+        def return_to_select() -> None:
+            for nm, jj in reversed(visited[:-1]):
+                motions.unload_move_j(nm, jj, log=print)
+            print(f'  {last_name}(으)로 돌아옴 -> 수령대 다시 선택')
+
+        went_back = False
+        for name, jj in recv[int(ans)]:
+            if list(jj) == list(last_j):
+                print(f'  {name}: 지금 위치와 같은 좌표 -> 이동 생략')
+                continue
+            a = input(f'  {name} {jj} 로 이동할까요? (Enter=진행, b={last_name}으로 돌아감, q=멈춤) ').strip().lower()
+            if a == 'q':
+                print(f'  {name} 앞에서 멈춤')
+                return
+            if a == 'b':
+                return_to_select()
+                went_back = True
+                break
+            motions.unload_move_j(name, jj, log=print)
+            visited.append((name, jj))
+        if went_back:
+            continue
+
+        a = input(f'  수령대{ans} 도착. (Enter=그리퍼 열고 복귀, b={last_name}으로 돌아감, q=멈춤) ').strip().lower()
+        if a == 'q':
+            print('  수령대에서 멈춤 (베드판 잡은 상태)')
+            return
+        if a == 'b':
+            return_to_select()
+            continue
+        print(f'  수령대{ans} 도착 -> 그리퍼 열기 (놓기)')
+        motions.grip_open()
+        for name, jj in back:
+            a = input(f'  {name} {jj} 로 이동할까요? (Enter=진행, q=멈춤) ').strip().lower()
+            if a == 'q':
+                print(f'  {name} 앞에서 멈춤')
+                return
+            motions.unload_move_j(name, jj, log=print)
+        print(f'  [완료] 수령대{ans} 전달 후 홈 복귀')
+        return
+
+
 def run_steps(motions, start: int = 1, end: int | None = None) -> None:
     """등록된 좌표를 번호 순서대로 한 단계씩 이동.
 
@@ -107,7 +198,7 @@ def run_steps(motions, start: int = 1, end: int | None = None) -> None:
       - b = (층에 있으면) 진입전2로 복귀 / (진입전2에 있으면) 전 단계로
     범위에 진입전2가 안 들어가면(예: run 4 6) 그냥 번호 순서대로 진행한다.
     """
-    p = motions.poses
+    p = motions.unload_poses
     table = p.UNLOAD_J
     layers = getattr(p, 'UNLOAD_LAYER_STEP', {})
     frm = getattr(p, 'UNLOAD_BRANCH_FROM', None)
@@ -191,10 +282,20 @@ def run_steps(motions, start: int = 1, end: int | None = None) -> None:
                 leave_layer(motions, at_layer)  # 층에서 층으로 바로 가지 않고 진입전2를 거침
             enter_layer(motions, target)
             at_layer = target
-            if not try_grab(target):
-                pass   # 못 잡음: 원위치로 돌아와 그리퍼 열림 상태. at_layer는 그 층 그대로 (c = 다시 시도, b = 진입전2로)
+            if try_grab(target) and extract_after_grab(motions, target):
+                return   # 잡기 성공 -> 베드 빼내기까지 완료 (잡은 채로 마지막 좌표에 있음)
+            # 못 잡음: 원위치로 돌아와 그리퍼 열림 상태. at_layer는 그 층 그대로 (c = 다시 시도, b = 진입전2로)
             continue
         print(f'  입력 오류: {opts} 중 하나, b, c, g, r, q')
+
+
+def extract_from(motions, start: int = 9, layer: int = 3) -> None:
+    """테스트용: 베드판을 잡고 있는 상태에서 베드 빼내기를 start번 좌표부터 이어서 한다 (run 앞부분 생략)."""
+    steps = getattr(motions.unload_poses, 'UNLOAD_EXTRACT_STEPS', {}).get(layer, [])
+    if start not in steps:
+        raise ValueError(f'언로드{layer} 빼내기 번호에 {start}번 없음 (가능: {steps})')
+    print(f'  언로드{layer} 빼내기를 {start}번부터 시작 (베드판을 잡고 있어야 함. 그리퍼 g=잡기)')
+    extract_after_grab(motions, layer, start=start)
 
 
 STEP_MATCH_TOL_DEG = 3.0   # 현재 관절각이 좌표와 이 값 이내면 '그 단계에 있음'으로 본다
@@ -204,7 +305,7 @@ def current_step(motions) -> int | None:
     """지금 로봇이 있는 단계 번호 (UNLOAD_J 좌표와 가장 가까운 것, 허용 오차 밖이면 None)."""
     cur = motions.get_current_poses()[0]
     best = None
-    for n, (_name, j) in motions.poses.UNLOAD_J.items():
+    for n, (_name, j) in motions.unload_poses.UNLOAD_J.items():
         err = max(abs(cur[i] - j[i]) for i in range(6))
         if err <= STEP_MATCH_TOL_DEG and (best is None or err < best[0]):
             best = (err, n)
@@ -218,7 +319,7 @@ def back_steps(motions, to: int = 1) -> None:
         raise ValueError('지금 위치가 어느 단계 좌표와도 맞지 않음 -> `step N`으로 직접 이동하세요')
     if to >= cur:
         raise ValueError(f'지금 {cur}번 단계: {to}번은 뒤가 아님 (`back N`의 N은 {cur}보다 작아야 함)')
-    table = motions.poses.UNLOAD_J
+    table = motions.unload_poses.UNLOAD_J
     print(f'  현재 {cur}번 ({table[cur][0]}) -> {to}번까지 되돌아감')
     for n in range(cur - 1, to - 1, -1):
         if n not in table:
@@ -247,7 +348,7 @@ def zforce_test(motions, up: float = 20.0, down: float = 20.0, step: float = 5.0
         raise ValueError('step은 0보다 커야 함')
     start = list(motions.get_current_poses()[1])
     cur_step = current_step(motions)
-    name = motions.poses.UNLOAD_J[cur_step][0] if cur_step else '단계 좌표 아님'
+    name = motions.unload_poses.UNLOAD_J[cur_step][0] if cur_step else '단계 좌표 아님'
     print(f'  [힘 디버깅] 시작 위치: {name}  Z={start[2]:.1f}mm  (위 {up:.0f}mm / 아래 {down:.0f}mm, {step:.0f}mm씩, '
           f'속도 {ZFORCE_VELX}mm/s)')
 
@@ -288,6 +389,10 @@ def build_commands(motions):
                 lambda a: run_steps(motions,
                                     int(a[0]) if len(a) > 0 else 1,
                                     int(a[1]) if len(a) > 1 else None)),
+        'extract': ('[테스트] 베드 빼내기를 [시작=9]번부터 [층=3]: 그 번호 좌표 -> ... -> 11번 -> 수령대 선택 -> 복귀. 베드판을 잡고 있는 상태에서 시작',
+                    lambda a: extract_from(motions,
+                                           int(a[0]) if len(a) > 0 else 9,
+                                           int(a[1]) if len(a) > 1 else 3)),
         'back': ('지금 단계에서 [N=1]번 단계까지 한 단계씩 거꾸로 되돌아감 (Enter=진행, q=멈춤)',
                  lambda a: back_steps(motions, int(a[0]) if a else 1)),
         'where': ('지금 로봇이 있는 단계 번호 확인',
@@ -367,6 +472,7 @@ def main(args=None) -> None:
                 # 고친 코드 반영: poses -> motions 순서로 다시 읽기
                 try:
                     importlib.reload(motions.poses)
+                    importlib.reload(motions.unload_poses)
                     importlib.reload(motions)
                     importlib.reload(sys.modules[__name__])
                 except Exception as exc:  # noqa: BLE001
