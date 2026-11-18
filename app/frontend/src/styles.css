@@ -77,6 +77,18 @@ body {
   padding: 1rem;
 }
 
+.arm-viewer-panel {
+  grid-column: 1 / -1;
+  height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.arm-viewer-panel > div:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
 .panel h2 {
   margin-top: 0;
   font-size: 0.95rem;

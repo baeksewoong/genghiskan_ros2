@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 interface DashboardTemplateProps {
+  armViewer: ReactNode;
   orderForm: ReactNode;
   boardStock: ReactNode;
   printers: ReactNode;
@@ -8,10 +9,18 @@ interface DashboardTemplateProps {
   modal?: ReactNode;
 }
 
-export function DashboardTemplate({ orderForm, boardStock, printers, receivePos, modal }: DashboardTemplateProps) {
+export function DashboardTemplate({
+  armViewer,
+  orderForm,
+  boardStock,
+  printers,
+  receivePos,
+  modal,
+}: DashboardTemplateProps) {
   return (
     <div className="app">
       <main className="layout">
+        {armViewer}
         {orderForm}
         {boardStock}
         {printers}
