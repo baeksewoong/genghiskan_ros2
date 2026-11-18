@@ -15,6 +15,7 @@
 """Unit tests for sfarm_bridge SQS event payload formatting."""
 
 from datetime import datetime
+import threading
 from unittest.mock import MagicMock
 
 from sfarm_bridge.sfarm_bridge import (
@@ -389,3 +390,92 @@ def test_build_and_handle_unload2_result():
     SqsEchoNode.handle_message(fake_node, msg_u2)
     fake_node.execute_unload2.assert_called_once_with(work_id=181, receive_pos_id=1)
     fake_node.delete.assert_called_once_with(msg_u2)
+
+
+def test_robot_busy_blocks_sqs_polling_and_dispatch(monkeypatch):
+    """Verify sfarm_bridge does not poll SQS or dispatch/produce while robot is busy."""
+    fake_node = MagicMock()
+    fake_node._robot_busy_lock = threading.Lock()
+    fake_node._robot_busy_event = threading.Event()
+    fake_node._active_action_name = None
+    fake_node._is_robot_busy.side_effect = lambda: SqsEchoNode._is_robot_busy(fake_node)
+    fake_node._try_acquire_robot_busy.side_effect = (
+        lambda name: SqsEchoNode._try_acquire_robot_busy(fake_node, name)
+    )
+    fake_node._clear_robot_busy.side_effect = (
+        lambda: SqsEchoNode._clear_robot_busy(fake_node)
+    )
+
+    assert SqsEchoNode._try_acquire_robot_busy(fake_node, '/sfarm/load1') is True
+    assert SqsEchoNode._is_robot_busy(fake_node) is True
+    assert SqsEchoNode._try_acquire_robot_busy(fake_node, '/sfarm/load2') is False
+
+    # handle_message must defer without dispatching or producing SQS while busy
+    msg = {
+        'MessageId': 'msg-busy',
+        'ReceiptHandle': 'rh-busy',
+        'Body': '{"type": "UNKNOWN"}',
+    }
+    assert SqsEchoNode.handle_message(fake_node, msg) is False
+    fake_node.produce.assert_not_called()
+    fake_node.delete.assert_not_called()
+
+    # consume_loop must not call sqs.receive_message while robot is busy
+    fake_node.stop = threading.Event()
+    fake_node.stop.wait = MagicMock(side_effect=lambda _t: fake_node.stop.set())
+    monkeypatch.setattr('sfarm_bridge.sfarm_bridge.rclpy.ok', lambda: True)
+    SqsEchoNode.consume_loop(fake_node)
+    fake_node.sqs.receive_message.assert_not_called()
+
+    # on_load1_result clears busy flag BEFORE calling handle_load1_result (which produces SQS)
+    was_busy_during_handle = []
+    fake_node.handle_load1_result.side_effect = (
+        lambda *_args: was_busy_during_handle.append(SqsEchoNode._is_robot_busy(fake_node))
+        or True
+    )
+    res_future = MagicMock()
+    res_future.result.return_value.result = Load1.Result(work_id=77, success=True)
+    done_event = threading.Event()
+    holder = {'result': None, 'event_sent': False}
+    SqsEchoNode.on_load1_result(fake_node, res_future, done_event, holder, 77, None)
+
+    assert done_event.is_set()
+    assert was_busy_during_handle == [False]
+    assert SqsEchoNode._is_robot_busy(fake_node) is False
+    assert holder['event_sent'] is True
+
+
+def test_execute_load1_clears_busy_on_reject_and_keeps_busy_on_timeout():
+    """Verify _robot_busy clears on rejection and stays set on action timeout."""
+    fake_node = MagicMock()
+    fake_node._robot_busy_lock = threading.Lock()
+    fake_node._robot_busy_event = threading.Event()
+    fake_node._active_action_name = None
+    fake_node.action_timeout_sec = 0.0
+    fake_node.stop = threading.Event()
+    fake_node._is_robot_busy.side_effect = lambda: SqsEchoNode._is_robot_busy(fake_node)
+    fake_node._try_acquire_robot_busy.side_effect = (
+        lambda name: SqsEchoNode._try_acquire_robot_busy(fake_node, name)
+    )
+    fake_node._clear_robot_busy.side_effect = (
+        lambda: SqsEchoNode._clear_robot_busy(fake_node)
+    )
+    fake_node._wait_for_action_done.side_effect = (
+        lambda name, evt: SqsEchoNode._wait_for_action_done(fake_node, name, evt)
+    )
+
+    # Goal rejected clears _robot_busy
+    goal_future = MagicMock()
+    goal_future.result.return_value.accepted = False
+    assert SqsEchoNode._try_acquire_robot_busy(fake_node, '/sfarm/load1') is True
+    done_event = threading.Event()
+    SqsEchoNode.on_load1_goal_response(fake_node, goal_future, done_event, {}, 10, None)
+    assert done_event.is_set()
+    assert SqsEchoNode._is_robot_busy(fake_node) is False
+
+    # Action timeout leaves _robot_busy set until on_load1_result completes
+    fake_node.load1_client.wait_for_server.return_value = True
+    fake_node.load1_client.send_goal_async.return_value = MagicMock()
+    res, sent = SqsEchoNode.execute_load1(fake_node, work_id=11, start_pos_id=3)
+    assert (res, sent) == (None, False)
+    assert SqsEchoNode._is_robot_busy(fake_node) is True

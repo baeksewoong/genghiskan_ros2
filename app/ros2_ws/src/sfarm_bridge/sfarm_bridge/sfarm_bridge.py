@@ -384,6 +384,9 @@ class SqsEchoNode(Node):
 
         self.sqs = boto3.client('sqs', region_name=region)
         self.stop = threading.Event()
+        self._robot_busy_lock = threading.Lock()
+        self._robot_busy_event = threading.Event()
+        self._active_action_name: str | None = None
         # long polling은 최대 20초 블로킹하므로 executor와 분리된 스레드에서 실행
         self.worker = threading.Thread(target=self.consume_loop, daemon=True)
         self.worker.start()
@@ -423,10 +426,57 @@ class SqsEchoNode(Node):
         response.message = 'sent' if sent else 'produce failed'
         return response
 
+    # ---------------------------------------------------------------- busy guard
+    def _is_robot_busy(self) -> bool:
+        """Return True while a ROS 2 action goal is in flight on the robot."""
+        event = getattr(self, '_robot_busy_event', None)
+        return isinstance(event, threading.Event) and event.is_set()
+
+    def _try_acquire_robot_busy(self, action_name: str) -> bool:
+        """Mark the robot busy if idle; return False if an action is already active."""
+        event = getattr(self, '_robot_busy_event', None)
+        if not isinstance(event, threading.Event):
+            return True
+        with self._robot_busy_lock:
+            if event.is_set():
+                return False
+            self._active_action_name = action_name
+            event.set()
+            return True
+
+    def _clear_robot_busy(self) -> None:
+        """Clear the in-flight robot busy state once an action completes or fails to start."""
+        event = getattr(self, '_robot_busy_event', None)
+        if not isinstance(event, threading.Event):
+            return
+        with self._robot_busy_lock:
+            self._active_action_name = None
+            event.clear()
+
+    def _wait_for_action_done(self, action_name: str, done_event: threading.Event) -> bool:
+        """Wait until a ROS 2 action completes, timing out without clearing busy state."""
+        deadline = self.action_timeout_sec
+        waited = 0.0
+        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
+            if done_event.wait(timeout=0.5):
+                return True
+            waited += 0.5
+            if waited >= deadline:
+                self.get_logger().error(f'{action_name} timed out after {deadline}s')
+                return False
+        return done_event.is_set()
+
     # ---------------------------------------------------------------- consume
     def consume_loop(self) -> None:
         """Poll robot-commands.fifo in a background thread."""
         while not self.stop.is_set() and rclpy.ok():
+            if SqsEchoNode._is_robot_busy(self):
+                self.get_logger().debug(
+                    f'robot is busy ({self._active_action_name}); waiting before polling SQS'
+                )
+                self.stop.wait(0.5)
+                continue
+
             try:
                 resp = self.sqs.receive_message(
                     QueueUrl=self.command_queue_url,
@@ -445,10 +495,17 @@ class SqsEchoNode(Node):
                 continue
 
             for message in messages:
-                self.handle_message(message)
+                if not self.handle_message(message):
+                    self.stop.wait(1.0)
 
-    def handle_message(self, message: dict) -> None:
+    def handle_message(self, message: dict) -> bool:
         """Parse an SQS message, dispatch ROS 2 action, and report result."""
+        if SqsEchoNode._is_robot_busy(self):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); deferring SQS message'
+            )
+            return False
+
         body = message['Body']
         print(f'[RECEIVED] message_id={message["MessageId"]}')
         print(f'           body={body}', flush=True)
@@ -458,7 +515,7 @@ class SqsEchoNode(Node):
         except json.JSONDecodeError:
             self.get_logger().error('body is not JSON; deleting message')
             self.delete(message)
-            return
+            return True
 
         jog_kind, jog_fields = parse_jog_or_gripper_command(command)
         if jog_kind == 'JOG':
@@ -467,11 +524,11 @@ class SqsEchoNode(Node):
                 self.get_logger().warning(
                     'JOG action did not complete; keeping SQS message for retry'
                 )
-                return
+                return False
             event = build_jog_result_event(result)
             if self.produce(event):
                 self.delete(message)
-            return
+            return True
 
         if jog_kind == 'GRIPPER':
             result = self.execute_gripper(jog_fields)
@@ -479,18 +536,18 @@ class SqsEchoNode(Node):
                 self.get_logger().warning(
                     'GRIPPER action did not complete; keeping SQS message for retry'
                 )
-                return
+                return False
             event = build_gripper_result_event(result)
             if self.produce(event):
                 self.delete(message)
-            return
+            return True
 
         action_kind, goal_fields = parse_task_command(command)
         if action_kind is None or goal_fields is None:
             event = self.build_event(command)
             if self.produce(event):
                 self.delete(message)
-            return
+            return True
 
         if action_kind == 'LOAD':
             result, event_sent = self.execute_load1(
@@ -502,10 +559,10 @@ class SqsEchoNode(Node):
                 self.get_logger().warning(
                     'LOAD1 action did not complete; keeping SQS message for retry'
                 )
-                return
+                return False
             if event_sent:
                 self.delete(message)
-            return
+            return True
 
         if action_kind == 'LOAD2':
             result, event_sent = self.execute_load2(
@@ -516,10 +573,10 @@ class SqsEchoNode(Node):
                 self.get_logger().warning(
                     'LOAD2 action did not complete; keeping SQS message for retry'
                 )
-                return
+                return False
             if event_sent:
                 self.delete(message)
-            return
+            return True
 
         if action_kind == 'UNLOAD1':
             result, event_sent = self.execute_unload1(
@@ -530,10 +587,10 @@ class SqsEchoNode(Node):
                 self.get_logger().warning(
                     'UNLOAD1 action did not complete; keeping SQS message for retry'
                 )
-                return
+                return False
             if event_sent:
                 self.delete(message)
-            return
+            return True
 
         if action_kind == 'UNLOAD2':
             result, event_sent = self.execute_unload2(
@@ -544,17 +601,17 @@ class SqsEchoNode(Node):
                 self.get_logger().warning(
                     'UNLOAD2 action did not complete; keeping SQS message for retry'
                 )
-                return
+                return False
             if event_sent:
                 self.delete(message)
-            return
+            return True
 
         result = self.execute_ros_action(action_kind, goal_fields)
         if result is None:
             self.get_logger().warning(
                 f'{action_kind} action did not complete; keeping SQS message for retry'
             )
-            return
+            return False
 
         event = build_action_result_event(
             action_kind=action_kind,
@@ -566,6 +623,7 @@ class SqsEchoNode(Node):
         )
         if self.produce(event):
             self.delete(message)
+        return True
 
     # ---------------------------------------------------------------- ros2 action
     def execute_ros_action(self, action_kind: str, goal_fields: dict):
@@ -574,12 +632,19 @@ class SqsEchoNode(Node):
             raise ValueError(f'Unsupported action kind for execute_ros_action: {action_kind}')
         client = self.unload_client
         action_name = '/sfarm/unload'
+        if not self._try_acquire_robot_busy(action_name):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping {action_name}'
+            )
+            return None
+
         goal_msg = Unload.Goal()
         goal_msg.work_id = goal_fields['work_id']
         goal_msg.pos_3d_id = goal_fields['pos_3d_id']
         goal_msg.receive_pos_id = goal_fields['receive_pos_id']
 
         if not client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error(f'{action_name} action server is not available')
             return None
 
@@ -602,6 +667,7 @@ class SqsEchoNode(Node):
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'{action_name} result error: {exc}')
             finally:
+                self._clear_robot_busy()
                 done_event.set()
 
         def on_goal_response(future) -> None:
@@ -609,11 +675,13 @@ class SqsEchoNode(Node):
                 goal_handle = future.result()
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'{action_name} goal error: {exc}')
+                self._clear_robot_busy()
                 done_event.set()
                 return
 
             if not goal_handle.accepted:
                 self.get_logger().warning(f'{action_name} goal was rejected')
+                self._clear_robot_busy()
                 done_event.set()
                 return
 
@@ -621,18 +689,16 @@ class SqsEchoNode(Node):
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(on_result)
 
-        goal_future = client.send_goal_async(goal_msg, feedback_callback=on_feedback)
-        goal_future.add_done_callback(on_goal_response)
+        try:
+            goal_future = client.send_goal_async(goal_msg, feedback_callback=on_feedback)
+            goal_future.add_done_callback(on_goal_response)
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'{action_name} send_goal_async failed: {exc}')
+            return None
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'{action_name} timed out after {deadline}s')
-                return None
+        if not self._wait_for_action_done(action_name, done_event):
+            return None
 
         return holder['result']
 
@@ -646,7 +712,14 @@ class SqsEchoNode(Node):
         handle_message()가 SQS 메시지를 지우지 않아 다음 polling에서 재시도된다
         (PRD 3.1/7장 - 실패를 삼키지 않는다는 기존 원칙과 일치).
         """
+        if not self._try_acquire_robot_busy('/sfarm/jog'):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping /sfarm/jog'
+            )
+            return None
+
         if not self.jog_client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error('/sfarm/jog action server is not available')
             return None
 
@@ -672,6 +745,7 @@ class SqsEchoNode(Node):
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'/sfarm/jog result error: {exc}')
             finally:
+                self._clear_robot_busy()
                 done_event.set()
 
         def on_goal_response(future) -> None:
@@ -679,36 +753,46 @@ class SqsEchoNode(Node):
                 goal_handle = future.result()
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'/sfarm/jog goal error: {exc}')
+                self._clear_robot_busy()
                 done_event.set()
                 return
             if not goal_handle.accepted:
                 self.get_logger().warning('/sfarm/jog goal was rejected')
+                self._clear_robot_busy()
                 done_event.set()
                 return
             self.get_logger().info('/sfarm/jog goal accepted')
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(on_result)
 
-        goal_future = self.jog_client.send_goal_async(goal_msg, feedback_callback=on_feedback)
-        goal_future.add_done_callback(on_goal_response)
+        try:
+            goal_future = self.jog_client.send_goal_async(
+                goal_msg, feedback_callback=on_feedback
+            )
+            goal_future.add_done_callback(on_goal_response)
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'/sfarm/jog send_goal_async failed: {exc}')
+            return None
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'/sfarm/jog timed out after {deadline}s')
-                return None
+        if not self._wait_for_action_done('/sfarm/jog', done_event):
+            return None
 
         return holder['result']
 
     def execute_gripper(self, fields: dict) -> 'Gripper.Result | None':
         """Send a Gripper goal to /sfarm/gripper and wait for the result (PRD 3.1).
 
-        execute_jog와 완전히 같은 모양(execute_load1 패턴 복제)."""
+        execute_jog와 완전히 같은 모양(execute_load1 패턴 복제).
+        """
+        if not self._try_acquire_robot_busy('/sfarm/gripper'):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping /sfarm/gripper'
+            )
+            return None
+
         if not self.gripper_client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error('/sfarm/gripper action server is not available')
             return None
 
@@ -730,6 +814,7 @@ class SqsEchoNode(Node):
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'/sfarm/gripper result error: {exc}')
             finally:
+                self._clear_robot_busy()
                 done_event.set()
 
         def on_goal_response(future) -> None:
@@ -737,30 +822,30 @@ class SqsEchoNode(Node):
                 goal_handle = future.result()
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'/sfarm/gripper goal error: {exc}')
+                self._clear_robot_busy()
                 done_event.set()
                 return
             if not goal_handle.accepted:
                 self.get_logger().warning('/sfarm/gripper goal was rejected')
+                self._clear_robot_busy()
                 done_event.set()
                 return
             self.get_logger().info('/sfarm/gripper goal accepted')
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(on_result)
 
-        goal_future = self.gripper_client.send_goal_async(
-            goal_msg, feedback_callback=on_feedback
-        )
-        goal_future.add_done_callback(on_goal_response)
+        try:
+            goal_future = self.gripper_client.send_goal_async(
+                goal_msg, feedback_callback=on_feedback
+            )
+            goal_future.add_done_callback(on_goal_response)
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'/sfarm/gripper send_goal_async failed: {exc}')
+            return None
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'/sfarm/gripper timed out after {deadline}s')
-                return None
+        if not self._wait_for_action_done('/sfarm/gripper', done_event):
+            return None
 
         return holder['result']
 
@@ -841,7 +926,14 @@ class SqsEchoNode(Node):
         sd_pos_id: int | None = None,
     ) -> tuple[Load1.Result | None, bool]:
         """Send a Load1 goal to /sfarm/load1 and handle success/failure callbacks."""
+        if not self._try_acquire_robot_busy('/sfarm/load1'):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping /sfarm/load1'
+            )
+            return None, False
+
         if not self.load1_client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error('/sfarm/load1 action server is not available')
             return None, False
 
@@ -855,24 +947,22 @@ class SqsEchoNode(Node):
         done_event = threading.Event()
         holder: dict = {'result': None, 'event_sent': False}
 
-        goal_future = self.load1_client.send_goal_async(
-            goal_msg, feedback_callback=self.on_load1_feedback
-        )
-        goal_future.add_done_callback(
-            lambda fut: self.on_load1_goal_response(
-                fut, done_event, holder, work_id, sd_pos_id
+        try:
+            goal_future = self.load1_client.send_goal_async(
+                goal_msg, feedback_callback=self.on_load1_feedback
             )
-        )
+            goal_future.add_done_callback(
+                lambda fut: self.on_load1_goal_response(
+                    fut, done_event, holder, work_id, sd_pos_id
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'/sfarm/load1 send_goal_async failed: {exc}')
+            return None, False
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'/sfarm/load1 timed out after {deadline}s')
-                return None, False
+        if not self._wait_for_action_done('/sfarm/load1', done_event):
+            return None, False
 
         return holder['result'], bool(holder['event_sent'])
 
@@ -899,11 +989,13 @@ class SqsEchoNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/load1 goal error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warning('/sfarm/load1 goal was rejected')
+            self._clear_robot_busy()
             done_event.set()
             return
 
@@ -928,9 +1020,11 @@ class SqsEchoNode(Node):
             result = future.result().result
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/load1 result error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
+        self._clear_robot_busy()
         holder['result'] = result
         holder['event_sent'] = self.handle_load1_result(result, work_id, sd_pos_id)
         done_event.set()
@@ -976,7 +1070,14 @@ class SqsEchoNode(Node):
         sd_pos_id: int,
     ) -> tuple[Load2.Result | None, bool]:
         """Send a Load2 goal to /sfarm/load2 and handle success/failure callbacks."""
+        if not self._try_acquire_robot_busy('/sfarm/load2'):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping /sfarm/load2'
+            )
+            return None, False
+
         if not self.load2_client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error('/sfarm/load2 action server is not available')
             return None, False
 
@@ -990,24 +1091,22 @@ class SqsEchoNode(Node):
         done_event = threading.Event()
         holder: dict = {'result': None, 'event_sent': False}
 
-        goal_future = self.load2_client.send_goal_async(
-            goal_msg, feedback_callback=self.on_load2_feedback
-        )
-        goal_future.add_done_callback(
-            lambda fut: self.on_load2_goal_response(
-                fut, done_event, holder, work_id
+        try:
+            goal_future = self.load2_client.send_goal_async(
+                goal_msg, feedback_callback=self.on_load2_feedback
             )
-        )
+            goal_future.add_done_callback(
+                lambda fut: self.on_load2_goal_response(
+                    fut, done_event, holder, work_id
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'/sfarm/load2 send_goal_async failed: {exc}')
+            return None, False
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'/sfarm/load2 timed out after {deadline}s')
-                return None, False
+        if not self._wait_for_action_done('/sfarm/load2', done_event):
+            return None, False
 
         return holder['result'], bool(holder['event_sent'])
 
@@ -1032,11 +1131,13 @@ class SqsEchoNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/load2 goal error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warning('/sfarm/load2 goal was rejected')
+            self._clear_robot_busy()
             done_event.set()
             return
 
@@ -1058,9 +1159,11 @@ class SqsEchoNode(Node):
             result = future.result().result
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/load2 result error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
+        self._clear_robot_busy()
         holder['result'] = result
         holder['event_sent'] = self.handle_load2_result(result, work_id)
         done_event.set()
@@ -1098,7 +1201,14 @@ class SqsEchoNode(Node):
         sd_pos_id: int,
     ) -> tuple[Unload1.Result | None, bool]:
         """Send an Unload1 goal to /sfarm/unload1 and handle success/failure callbacks."""
+        if not self._try_acquire_robot_busy('/sfarm/unload1'):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping /sfarm/unload1'
+            )
+            return None, False
+
         if not self.unload1_client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error('/sfarm/unload1 action server is not available')
             return None, False
 
@@ -1112,24 +1222,22 @@ class SqsEchoNode(Node):
         done_event = threading.Event()
         holder: dict = {'result': None, 'event_sent': False}
 
-        goal_future = self.unload1_client.send_goal_async(
-            goal_msg, feedback_callback=self.on_unload1_feedback
-        )
-        goal_future.add_done_callback(
-            lambda fut: self.on_unload1_goal_response(
-                fut, done_event, holder, work_id
+        try:
+            goal_future = self.unload1_client.send_goal_async(
+                goal_msg, feedback_callback=self.on_unload1_feedback
             )
-        )
+            goal_future.add_done_callback(
+                lambda fut: self.on_unload1_goal_response(
+                    fut, done_event, holder, work_id
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'/sfarm/unload1 send_goal_async failed: {exc}')
+            return None, False
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'/sfarm/unload1 timed out after {deadline}s')
-                return None, False
+        if not self._wait_for_action_done('/sfarm/unload1', done_event):
+            return None, False
 
         return holder['result'], bool(holder['event_sent'])
 
@@ -1155,11 +1263,13 @@ class SqsEchoNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/unload1 goal error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warning('/sfarm/unload1 goal was rejected')
+            self._clear_robot_busy()
             done_event.set()
             return
 
@@ -1181,9 +1291,11 @@ class SqsEchoNode(Node):
             result = future.result().result
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/unload1 result error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
+        self._clear_robot_busy()
         holder['result'] = result
         holder['event_sent'] = self.handle_unload1_result(result, work_id)
         done_event.set()
@@ -1228,7 +1340,14 @@ class SqsEchoNode(Node):
         receive_pos_id: int,
     ) -> tuple[Unload2.Result | None, bool]:
         """Send an Unload2 goal to /sfarm/unload2 and handle success/failure callbacks."""
+        if not self._try_acquire_robot_busy('/sfarm/unload2'):
+            self.get_logger().warning(
+                f'robot is busy ({self._active_action_name}); skipping /sfarm/unload2'
+            )
+            return None, False
+
         if not self.unload2_client.wait_for_server(timeout_sec=5.0):
+            self._clear_robot_busy()
             self.get_logger().error('/sfarm/unload2 action server is not available')
             return None, False
 
@@ -1243,24 +1362,22 @@ class SqsEchoNode(Node):
         done_event = threading.Event()
         holder: dict = {'result': None, 'event_sent': False}
 
-        goal_future = self.unload2_client.send_goal_async(
-            goal_msg, feedback_callback=self.on_unload2_feedback
-        )
-        goal_future.add_done_callback(
-            lambda fut: self.on_unload2_goal_response(
-                fut, done_event, holder, work_id
+        try:
+            goal_future = self.unload2_client.send_goal_async(
+                goal_msg, feedback_callback=self.on_unload2_feedback
             )
-        )
+            goal_future.add_done_callback(
+                lambda fut: self.on_unload2_goal_response(
+                    fut, done_event, holder, work_id
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._clear_robot_busy()
+            self.get_logger().error(f'/sfarm/unload2 send_goal_async failed: {exc}')
+            return None, False
 
-        deadline = self.action_timeout_sec
-        waited = 0.0
-        while not done_event.is_set() and not self.stop.is_set() and rclpy.ok():
-            if done_event.wait(timeout=0.5):
-                break
-            waited += 0.5
-            if waited >= deadline:
-                self.get_logger().error(f'/sfarm/unload2 timed out after {deadline}s')
-                return None, False
+        if not self._wait_for_action_done('/sfarm/unload2', done_event):
+            return None, False
 
         return holder['result'], bool(holder['event_sent'])
 
@@ -1285,11 +1402,13 @@ class SqsEchoNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/unload2 goal error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warning('/sfarm/unload2 goal was rejected')
+            self._clear_robot_busy()
             done_event.set()
             return
 
@@ -1311,9 +1430,11 @@ class SqsEchoNode(Node):
             result = future.result().result
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'/sfarm/unload2 result error: {exc}')
+            self._clear_robot_busy()
             done_event.set()
             return
 
+        self._clear_robot_busy()
         holder['result'] = result
         holder['event_sent'] = self.handle_unload2_result(result, work_id)
         done_event.set()
