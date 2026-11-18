@@ -1,0 +1,8 @@
+# Request
+string reason   # 로그용, 비어 있어도 됨
+---
+# Response
+bool success
+string message
+bool stopped_motion   # true = 실제로 stop() 호출함, false = 멈출 동작이 없었거나
+                       #        LOAD/UNLOAD 중이라 무시함(8장 스코프 제한)

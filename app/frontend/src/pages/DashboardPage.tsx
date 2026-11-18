@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { DashboardTemplate } from "../components/templates/DashboardTemplate";
-import { DoosanM0609Viewer } from "../components/organisms/DoosanArmViewer/DoosanArmViewer";
 import { OrderForm } from "../components/organisms/OrderForm";
 import { BoardStockPanel } from "../components/organisms/BoardStockPanel";
 import { BoardStockRefillModal } from "../components/organisms/BoardStockRefillModal";
@@ -26,16 +25,8 @@ export function DashboardPage() {
     boardStock,
     receivePos,
     snapshot,
-    teachingPendant,
   } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
-
-  // 조그 중인 실제 로봇의 관절각(posj, deg)을 그대로 3D 뷰어에 반영한다.
-  // posx(TASK 공간)는 joint 입력이 아니므로 사용하지 않는다.
-  const liveJoints =
-    teachingPendant.currentPose?.space === "JOINT"
-      ? teachingPendant.currentPose.posj
-      : undefined;
 
   // 수령대 칸에 올라간 주문 상세 조회용: 이동 중(UNLOADING)은 active, 수령 대기는 pickup에 있다.
   const receiveOrders = [...(snapshot?.active_orders ?? []), ...(snapshot?.pickup_orders ?? [])];
@@ -91,19 +82,6 @@ export function DashboardPage() {
 
   return (
     <DashboardTemplate
-      armViewer={
-        <section className="panel arm-viewer-panel">
-          <h2>M0609 3D 뷰어</h2>
-          <DoosanM0609Viewer
-            assetsBaseUrl="/assets/doosan/m0609_rg2"
-            gripper="rg2"
-            joints={liveJoints}
-            angleUnit="deg"
-            showHomeButton={false}
-            showGripperControls={false}
-          />
-        </section>
-      }
       orderForm={<OrderForm onOrder={handleOrder} error={orderError} />}
       boardStock={<BoardStockPanel slots={boardStock} />}
       printers={<PrinterPanel printers={snapshot?.printers ?? null} />}

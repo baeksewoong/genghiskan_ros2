@@ -47,8 +47,13 @@ export function ReceivePosPanel({ positions, orders, onPickUp }: ReceivePosPanel
   };
 
   return (
-    <section className="panel receive-pos-panel">
-      <h2>수령대 현황</h2>
+    <section className="panel kiosk-card receive-pos-panel">
+      <h2>
+        <span className="kiosk-card-icon" aria-hidden="true">
+          📬
+        </span>
+        수령대 현황
+      </h2>
       {!positions ? (
         <p>불러오는 중...</p>
       ) : (

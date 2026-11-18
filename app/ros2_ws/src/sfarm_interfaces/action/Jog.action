@@ -1,0 +1,19 @@
+# Goal (입력) — 부모 PRD 7장 JOG 메시지 필드와 1:1 대응
+string jog_id
+string space        # "TASK" | "JOINT"
+string ref_frame     # "BASE" | "TOOL"  (space=TASK일 때만 의미 있음, JOINT면 빈 문자열)
+string axis          # TASK: "X"|"Y"|"Z"|"RX"|"RY"|"RZ", JOINT: "J1".."J6"
+int8 direction        # 1 또는 -1
+float64 step_size     # TASK 선형: mm, TASK 회전/JOINT: deg
+---
+# Result (출력)
+bool success
+string message
+string jog_id
+float64[6] posj
+float64[6] posx
+---
+# Feedback
+builtin_interfaces/Time start_at
+builtin_interfaces/Time end_at
+string jog_id
