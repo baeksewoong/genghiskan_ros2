@@ -15,7 +15,7 @@ from app.api.routers import (
     teaching_pendant,
     work_requests,
 )
-from app.api.ws import client_ws
+from app.api.ws import client_ws, robot_state_ws
 from app.core.bootstrap import ensure_seed_data
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -68,3 +68,4 @@ app.include_router(sqs.router)
 app.include_router(teaching_pendant.router)
 
 app.include_router(client_ws.router)
+app.include_router(robot_state_ws.router)

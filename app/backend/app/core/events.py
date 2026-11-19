@@ -40,6 +40,25 @@ async def broadcast_to_web(session: AsyncSession, event_type: str, data: dict[st
         runtime.client_connections.discard(ws)
 
 
+async def broadcast_ephemeral(event_type: str, data: dict[str, Any]) -> None:
+    """DB(event_logs)에 기록하지 않고 /ws/client 연결에만 바로 보내는 경량 브로드캐스트.
+
+    실물 로봇 조인트 각도 피드(/ws/robot-state)처럼 10Hz 안팎으로 계속 들어오는
+    피드를 broadcast_to_web으로 그대로 흘리면 매 호출마다 event_logs에 insert가
+    쌓여 테이블이 터진다. 이 피드는 "현재 값"만 의미가 있고 히스토리를 남길
+    필요가 없으므로 DB 기록을 건너뛴다. 세션이 필요 없어 인자도 없다.
+    """
+    envelope = make_envelope(event_type, data)
+    dead: list = []
+    for ws in runtime.client_connections:
+        try:
+            await ws.send_json(envelope)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        runtime.client_connections.discard(ws)
+
+
 async def send_envelope_to(
     session: AsyncSession, ws, event_type: str, data: dict[str, Any]
 ) -> None:

@@ -9,6 +9,7 @@ import type {
   StateSnapshot,
   TeachingPendantPose,
 } from "../types";
+import type { RobotJointsEventPayload } from "../components/organisms/DoosanArmViewer";
 
 export interface LogEntry {
   id: string;
@@ -144,6 +145,8 @@ export function summarize(type: string, data: Record<string, unknown>): string {
       return `그리퍼 ${data.state} 완료 (gripper_cmd_id=${data.gripper_cmd_id})`;
     case "teaching_pendant.gripper_failed":
       return `그리퍼 명령 실패 (gripper_cmd_id=${data.gripper_cmd_id}): ${data.error_code}`;
+    case "robot.joints_updated":
+      return `로봇 관절각 갱신 (robot_id=${data.robot_id})`;
     default:
       return type;
   }
@@ -167,6 +170,9 @@ export function useLiveState() {
   const [receivePos, setReceivePos] = useState<ReceivePos[] | null>(null);
   // 티칭 팬던트 페이지 전용.
   const [teachingPendant, setTeachingPendant] = useState<TeachingPendantState>(INITIAL_TEACHING_PENDANT_STATE);
+  // 실물 로봇의 실시간 관절각(약 10Hz) — 티칭 팬던트 3D 뷰어 전용. log(50개 캡)에
+  // 넣으면 금방 다른 이벤트를 밀어내므로 별도 state로만 둔다.
+  const [robotJoints, setRobotJoints] = useState<RobotJointsEventPayload | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -187,6 +193,14 @@ export function useLiveState() {
 
       ws.onmessage = (event) => {
         const envelope: Envelope<Record<string, unknown>> = JSON.parse(event.data);
+
+        // robot.joints_updated는 ~10Hz로 쏟아져 log(50개 캡)를 순식간에 밀어내므로
+        // 로그 적재 없이 state만 갱신한다 (event_logs DB에도 안 쌓이는 이벤트).
+        if (envelope.type === "robot.joints_updated") {
+          setRobotJoints(envelope.data as unknown as RobotJointsEventPayload);
+          return;
+        }
+
         const entry: LogEntry = {
           id: envelope.event_id,
           ts: envelope.ts,
@@ -382,6 +396,7 @@ export function useLiveState() {
     boardStock,
     receivePos,
     teachingPendant,
+    robotJoints,
     beginTeachingPendantJog,
     beginTeachingPendantGripper,
     timeoutTeachingPendantJog,
