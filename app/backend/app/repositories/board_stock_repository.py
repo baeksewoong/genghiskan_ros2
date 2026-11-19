@@ -40,7 +40,9 @@ class BoardStockRepository:
 
     @staticmethod
     async def top_occupied_locked(session: AsyncSession) -> BoardStock | None:
-        """status='OCCUPIED'인 가장 큰 slot(맨 위 층)을 잠금과 함께 가져온다."""
+        """status='OCCUPIED'인 가장 큰 slot(맨 위 층)을 잠금과 함께 가져온다.
+        적재대는 3층부터 빼낸다 (작업대/프린터는 반대로 1층부터 채운다 —
+        PrinterRepository.first_empty_locked 참고)."""
         stmt = (
             select(BoardStock)
             .where(BoardStock.status == BoardStockStatus.OCCUPIED)

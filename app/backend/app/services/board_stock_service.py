@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.events import broadcast_to_web
 from app.models import BoardStock
 from app.repositories.board_stock_repository import BoardStockRepository
+from app.services.work_request_service import WorkRequestService
 
 
 class BoardStockService:
@@ -29,4 +30,8 @@ class BoardStockService:
         )
         await broadcast_to_web(session, "alert.cleared", {})
         await session.commit()
+
+        # 베드가 없어 디스패치를 보류했던 WAITING 주문이 있었다면, 다음 타이머
+        # 스윕까지 기다리지 않고 지금 바로 이어서 디스패치를 시도한다.
+        await WorkRequestService.dispatch_pending_robot_work()
         return rows

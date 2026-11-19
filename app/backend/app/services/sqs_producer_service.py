@@ -95,9 +95,7 @@ class SqsProducerService:
             raise ValueError(f"receive_pos_id는 {sorted(_RECEIVE_POS_IDS)} 중 하나여야 합니다: {receive_pos_id}")
         return await SqsProducerService._send(
             work_id,
-            # receive_pos_id 하드코딩: 수령대 2번 로봇 동작이 아직 준비되지 않아
-            # 실제 배정값과 무관하게 항상 1번으로 보낸다.
-            {"type": "unload2", "work_id": work_id, "receive_pos_id": 1},
+            {"type": "unload2", "work_id": work_id, "receive_pos_id": receive_pos_id},
             dedup_prefix="unload2",
             retry_token=retry_token,
         )
@@ -143,6 +141,34 @@ class SqsProducerService:
             body=body,
             log_extra={"gripper_cmd_id": gripper_cmd_id},
         )
+
+    @staticmethod
+    async def produce_manual_robot_event(body: dict, log_extra: dict) -> bool:
+        """사람이 눈으로 확인하고 로봇 대신 robot-events에 이벤트를 주입할 때 쓴다
+        (예: fail_load2 알럿에서 "네"를 눌러 success_load2를 대신 보냄 — PRD:
+        assets/docs/prd-work-request-sqs.md 5장). robot-events는 표준(비FIFO) 큐라
+        MessageGroupId/MessageDeduplicationId가 필요 없다."""
+        if not settings.event_queue_url:
+            await _broadcast_sqs_event(
+                "sqs.event_send_skipped", {**log_extra, "reason": "EVENT_QUEUE_URL 미설정"}
+            )
+            return False
+
+        try:
+            response = await asyncio.to_thread(
+                _client().send_message,
+                QueueUrl=settings.event_queue_url,
+                MessageBody=json.dumps(body, ensure_ascii=False),
+            )
+            await _broadcast_sqs_event(
+                "sqs.event_sent",
+                {**log_extra, "body": body, "message_id": response.get("MessageId"), "queue": "robot-events"},
+            )
+            return True
+        except (BotoCoreError, ClientError) as exc:
+            logger.error("robot-events 수동 발행 실패 (%s): %s", log_extra, exc)
+            await _broadcast_sqs_event("sqs.event_send_failed", {**log_extra, "body": body, "error": str(exc)})
+            return False
 
     @staticmethod
     async def _send(work_id: int, body: dict, dedup_prefix: str, retry_token: str | None = None) -> bool:

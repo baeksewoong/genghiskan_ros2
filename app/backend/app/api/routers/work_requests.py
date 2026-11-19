@@ -7,6 +7,7 @@ from app.services.order_presenter import build_order_out
 from app.services.work_request_service import (
     BoardEmptyError,
     LoadRetryNotFoundError,
+    PlaceConfirmNotFoundError,
     SqsProduceError,
     UnloadRetryNotFoundError,
     WorkRequestService,
@@ -28,7 +29,6 @@ async def create_work_request(
             detail={
                 "error_code": "BOARD_EMPTY",
                 "message": "적재대에 베드가 비어있습니다",
-                "order_id": exc.order_id,
             },
         ) from exc
     except SqsProduceError as exc:
@@ -62,6 +62,33 @@ async def retry_load(work_id: int) -> dict:
             detail={
                 "error_code": "SQS_PRODUCE_FAILED",
                 "message": "로봇에 작업을 다시 전달하지 못했습니다. 운영자 확인이 필요합니다.",
+                "order_id": exc.order_id,
+            },
+        ) from exc
+    return {"ok": True}
+
+
+@router.post("/{work_id}/confirm-place", status_code=200)
+async def confirm_place(work_id: int) -> dict:
+    """프린터 배치 실패(fail_load2) 알럿에서 사람이 작업대를 눈으로 확인하고 "네"를
+    누르면, 로봇 대신 success_load2를 robot-events에 주입한다."""
+    try:
+        await WorkRequestService.confirm_place(work_id)
+    except PlaceConfirmNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "PLACE_CONFIRM_NOT_FOUND",
+                "message": "확인할 작업을 찾을 수 없습니다",
+                "work_id": exc.work_id,
+            },
+        ) from exc
+    except SqsProduceError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "SQS_PRODUCE_FAILED",
+                "message": "robot-events에 이벤트를 전달하지 못했습니다. 운영자 확인이 필요합니다.",
                 "order_id": exc.order_id,
             },
         ) from exc
