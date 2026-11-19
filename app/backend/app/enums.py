@@ -53,6 +53,9 @@ class AlertReason(str, Enum):
     BOARD_STOCK_EMPTY = "BOARD_STOCK_EMPTY"
     # robot-events에서 베드 집기 실패 이벤트(예: {"work_id":1,"type":"fail_load1"})를 받았을 때.
     LOAD_PICK_FAILED = "LOAD_PICK_FAILED"
+    # robot-events에서 프린터 배치 실패 이벤트({"work_id":1,"type":"fail_load2"})를 받았을 때.
+    # 사람이 작업대를 눈으로 확인해 "네"(success_load2 대신 전송)/"아니오"(관리자 문의)로 처리한다.
+    PLACE_FAILED = "PLACE_FAILED"
     # robot-events에서 프린터 완성품 집기 실패 이벤트({"work_id":1,"type":"fail_unload1"})를 받았을 때.
     UNLOAD_PICK_FAILED = "UNLOAD_PICK_FAILED"
     # success_unload1 후 수령대(1, 2)가 모두 차 있어 unload2를 보내지 못했을 때.

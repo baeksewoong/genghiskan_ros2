@@ -6,6 +6,42 @@
 
 ---
 
+## 2026-11-19 — 작업요청(SQS) 로직 리뷰·수정 + 수동 테스트 현황 문서화
+
+### 현재 상태 (이어서 작업하기 전에 확인)
+
+| 항목 | 상태 |
+| --- | --- |
+| 커밋 | **커밋 전.** 브랜치 `fix/andrew-10`, 마지막 커밋 `b55ee58 백엔드 로직 수정 중`. 이 날짜의 변경은 전부 작업 트리에만 있다 (`git status`로 변경 파일 확인) |
+| 백엔드 테스트 | `cd app/backend && .venv/bin/python -m pytest -q` → 70개 전체 통과 |
+| 프론트 | 건드리지 않음 |
+| 로컬 서버 | uvicorn(`--reload`, port 8000) + MySQL(docker `app-mysql-1`) 계속 띄워둔 상태. **주의:** `.env`에 실제 AWS SQS 큐(COMMAND_QUEUE_URL/EVENT_QUEUE_URL)가 설정돼 있고, ROS2 쪽에 명령 발행 후 150ms 내로 success_*를 자동 응답하는 뭔가가(모킹/스텁으로 보임) 떠 있다 — 작업요청을 만들면 실제로 AWS까지 왕복한다 |
+| 수동 테스트 현황 | [`test-plan-work-request-sqs.md`](test-plan-work-request-sqs.md) — 37개 전부 완료. 마지막 G섹션 3건(31·32·33번)은 로봇 점유 창이 수백ms라 손으로 못 맞춰서, 작업요청 생성 응답/상태 폴링 직후 조그 세션 활성화를 쏘는 레이스 스크립트로 재현(`/private/tmp/.../scratchpad/test3{1,2}_race.py`, 세션에만 존재 — 필요하면 재작성) |
+
+### 한 일
+
+1. **하드코딩 제거**: `sqs_producer_service.py`/`work_request_service.py`/`timer_service.py`에서 테스트용으로 박아뒀던 `start_pos_id=3`, `sd_pos_id=1`, `receive_pos_id=1` 하드코딩을 전부 제거하고 실제 board/printer 슬롯 값을 쓰도록 고쳤다. 리베이스 중 `main`으로 덮어써서 깨져 있던 `RobotTaskRepository.get_active_load_for_order_locked` → `get_active_task_for_order_locked` 이름 불일치도 같이 고쳤다.
+2. **로봇 점유(mutex) + 순서 보장 추가**: 로봇이 하나뿐인데 LOAD1~LOAD2, UNLOAD1~UNLOAD2 진행 중에 다른 작업이 끼어들 수 있던 구조적 공백을 발견해서 고쳤다.
+   - `WorkRequestService._try_dispatch_load1`에 `get_active_real_robot_task_locked` 기반 busy-check 추가.
+   - UNLOAD 쪽에도 `RobotTask.dispatch_unload_request`(기존에 정의만 돼 있고 호출되는 곳이 없던 dead code)를 실제로 연결해, UNLOAD 진행 중에도 로봇 점유 상태가 `robot_tasks`에 남게 했다.
+   - `timer_service.py`의 타이머 스윕이 프린터 여러 대가 동시에 끝나도 unload1을 한 번에 하나씩만 보내도록(`dispatch_pending_robot_work`) 바꿨다 — 전에는 전부 즉시 발행해서 로봇이 완성품을 든 채로 다음 집기를 요청받는 위험이 있었다.
+   - 빈 프린터가 하나도 없으면 load1 자체를 보류하도록 가드 추가 — 안 그러면 로봇이 베드를 집고도 놓을 곳이 없어 영구적으로 멈추는 deadlock이 될 수 있었다.
+   - `_try_dispatch_load1`에 "나보다 먼저 기다린 WAITING 주문이 있으면 새치기하지 않는다" 체크 추가, `BoardStockService.refill_complete`가 채우기 완료 즉시 `dispatch_pending_robot_work`를 호출하도록 고쳐서 순서 보장 + 즉시 재시도를 둘 다 만족시켰다.
+3. **적재대 비었을 때 주문 자체를 안 만들도록 설계 변경**: 전에는 베드가 없어도 주문을 WAITING으로 저장했는데, 요청에 따라 베드 확인(`_ensure_board_available`)을 주문 생성보다 먼저 하도록 바꿔서 베드 없는 동안 들어온 요청은 주문/robot_tasks를 전혀 남기지 않고 바로 거부하게 했다. `BoardEmptyError`에서 `order_id` 제거(더 이상 주문이 없을 때 발생하는 에러라서), API 응답에서도 제거(프론트가 그 필드를 안 써서 영향 없음 확인).
+4. **수동 테스트 현황 문서** [`test-plan-work-request-sqs.md`](test-plan-work-request-sqs.md) 신설: 적재대/작업대/수령대 상황별 37개 테스트케이스를 표로 정리하고, 실제 로컬 서버에 대고 하나씩 확인한 기록을 상태/확인일/비고로 남겼다.
+
+### 알려진 문제 / 참고
+
+- ROS2 쪽 자동 응답기가 모든 명령에 즉시 성공으로만 답해서, **"실패" 시나리오(집기 실패, SQS 발행 실패 등)와 동시성/타이밍이 필요한 테스트는 라이브로 재현이 안 된다** — 이런 건 `pytest`로만 검증했다 (문서의 비고란에 어떤 테스트 함수로 확인했는지 적어둠).
+- 이 자동 응답기가 정확히 뭔지(진짜 ROS2 브릿지인지, 별도 스텁/시뮬레이터인지)는 확인하지 않았다 — 다음에 실제 로봇 연동을 테스트할 때는 이게 꺼져 있는지 먼저 확인해야 한다.
+
+### 다음 작업 (우선순위 순)
+
+1. 위 백엔드 변경사항 + `test-plan-work-request-sqs.md` 37개 완료 리뷰 후 커밋 (사용자가 직접 커밋).
+2. 여유 있으면: 위에서 발견한 ROS2 쪽 자동 응답기가 뭔지 확인 — 실제 연동 테스트 전에 꺼야 할 수도 있음.
+
+---
+
 ## 2026-11-18 — M0609 3D 뷰어를 home으로 이동 + atomic design 재배치
 
 ### 현재 상태 (이어서 작업하기 전에 확인)

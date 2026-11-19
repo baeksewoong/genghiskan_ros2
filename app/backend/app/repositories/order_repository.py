@@ -1,8 +1,8 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import ACTIVE_ORDER_STATUSES, OrderStatus
-from app.models import Order
+from app.enums import ACTIVE_ORDER_STATUSES, ACTIVE_TASK_STATUSES, OrderStatus
+from app.models import Order, RobotTask
 from app.repositories.base import lock_for_update
 
 
@@ -58,6 +58,25 @@ class OrderRepository:
             .order_by(Order.updated_at, Order.id)
         )
         return (await session.execute(lock_for_update(stmt, session))).scalars().first()
+
+    @staticmethod
+    async def oldest_print_done_without_active_task(session: AsyncSession) -> Order | None:
+        """출력은 끝났지만(PRINT_DONE) 아직 unload1이 디스패치되지 않은(해당 주문에
+        활성 robot_task가 없는) 주문 중 가장 먼저 출력이 끝난 것. 로봇이 다른
+        LOAD/UNLOAD 작업 중이어서 unload1 디스패치를 보류했던 주문을, 로봇이
+        비는 즉시(dispatch_pending_robot_work) 재시도하기 위해 쓴다."""
+        has_active_task = (
+            select(RobotTask.id)
+            .where(RobotTask.order_id == Order.id, RobotTask.status.in_(ACTIVE_TASK_STATUSES))
+            .exists()
+        )
+        stmt = (
+            select(Order)
+            .where(Order.status == OrderStatus.PRINT_DONE, ~has_active_task)
+            .order_by(Order.print_completed_at)
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalars().first()
 
     @staticmethod
     async def get_pickup(session: AsyncSession) -> list[Order]:
