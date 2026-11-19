@@ -220,6 +220,22 @@ class RobotTask(Base):
             dispatched_at=now,
         )
 
+    @classmethod
+    def dispatch_unload_request(cls, *, order_id: int, printer_slot: int, now: datetime) -> "RobotTask":
+        """작업요청(SQS) 경로: unload1(완성품 꺼내기) 디스패치 시점에 생성한다. 꺼낼
+        프린터(printer_slot/sd_pos_id)는 이미 알고 있다 — LOAD와 반대로 목적지(수령대)를
+        아직 모르는 채로 시작한다. 이 행이 LOAD 행과 같은 방식(DISPATCHED/RUNNING인
+        동안 "활성")으로 로봇 점유 상태를 나타내, unload1~unload2 사이에 다른 작업이
+        끼어들지 못하게 막는다 (get_active_real_robot_task_locked 참고)."""
+        return cls(
+            order_id=order_id,
+            printer_slot=printer_slot,
+            status=TaskStatus.DISPATCHED,
+            start_pos_id=None,
+            sd_pos_id=printer_slot,
+            dispatched_at=now,
+        )
+
     # ---- 상태 전이 ----
 
     def mark_running(self, now: datetime) -> None:

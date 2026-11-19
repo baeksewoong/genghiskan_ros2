@@ -5,9 +5,12 @@ import { BoardStockPanel } from "../components/organisms/BoardStockPanel";
 import { BoardStockRefillModal } from "../components/organisms/BoardStockRefillModal";
 import { LoadPickFailedModal } from "../components/organisms/LoadPickFailedModal";
 import { UnloadPickFailedModal } from "../components/organisms/UnloadPickFailedModal";
+import { PlaceFailedModal } from "../components/organisms/PlaceFailedModal";
+import { AdminContactModal } from "../components/organisms/AdminContactModal";
 import { ReceivePosFullModal } from "../components/organisms/ReceivePosFullModal";
 import { ReceivePosPanel } from "../components/organisms/ReceivePosPanel";
 import { PrinterPanel } from "../components/organisms/PrinterPanel";
+import { OrderQueuePanel } from "../components/organisms/OrderQueuePanel";
 import { useLiveState } from "../hooks/useLiveState";
 import { api, WorkRequestError } from "../lib/api";
 import type { Shape } from "../types";
@@ -20,6 +23,8 @@ export function DashboardPage() {
     setLoadFailedAlert,
     unloadFailedAlert,
     setUnloadFailedAlert,
+    placeFailedAlert,
+    setPlaceFailedAlert,
     receivePosFullAlert,
     setReceivePosFullAlert,
     boardStock,
@@ -27,6 +32,7 @@ export function DashboardPage() {
     snapshot,
   } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
+  const [adminContactOpen, setAdminContactOpen] = useState(false);
 
   // 수령대 칸에 올라간 주문 상세 조회용: 이동 중(UNLOADING)은 active, 수령 대기는 pickup에 있다.
   const receiveOrders = [...(snapshot?.active_orders ?? []), ...(snapshot?.pickup_orders ?? [])];
@@ -80,17 +86,43 @@ export function DashboardPage() {
     }
   };
 
+  const handleConfirmPlaceYes = async (workId: number) => {
+    // handleRetryLoad와 동일: 전송이 실패해도 모달은 닫고 콘솔에 남긴다.
+    try {
+      await api.confirmPlace(workId);
+    } catch (e) {
+      console.error("배치 확인 전송 실패:", e);
+    } finally {
+      setPlaceFailedAlert(null);
+    }
+  };
+
+  const handleConfirmPlaceNo = () => {
+    setPlaceFailedAlert(null);
+    setAdminContactOpen(true);
+  };
+
   return (
     <DashboardTemplate
       orderForm={<OrderForm onOrder={handleOrder} error={orderError} />}
       boardStock={<BoardStockPanel slots={boardStock} />}
       printers={<PrinterPanel printers={snapshot?.printers ?? null} />}
       receivePos={<ReceivePosPanel positions={receivePos} orders={receiveOrders} onPickUp={handlePickUp} />}
+      waitingQueue={
+        <OrderQueuePanel
+          icon="🕒"
+          title="작업 대기 중"
+          orders={snapshot?.waiting_orders ?? []}
+          emptyLabel="대기 중인 주문이 없습니다."
+        />
+      }
       modal={
         <>
           <BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />
           <LoadPickFailedModal alert={loadFailedAlert} onConfirm={handleRetryLoad} />
           <UnloadPickFailedModal alert={unloadFailedAlert} onConfirm={handleRetryUnload} />
+          <PlaceFailedModal alert={placeFailedAlert} onYes={handleConfirmPlaceYes} onNo={handleConfirmPlaceNo} />
+          <AdminContactModal open={adminContactOpen} onClose={() => setAdminContactOpen(false)} />
           <ReceivePosFullModal alert={receivePosFullAlert} onClose={() => setReceivePosFullAlert(null)} />
         </>
       }

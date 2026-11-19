@@ -10,6 +10,10 @@ PRD: assets/docs/prd-work-request-sqs.md 5장, assets/docs/prd-teaching-pendant.
   프린터를 RESERVED→PRINTING(타이머 시작)으로 바꾼다("작업중" 표시).
 - {"work_id":1,"type":"fail_load1"}: 베드 집기 실패. 로봇/주문 상태는 바꾸지 않고
   웹에 알럿만 띄워서 사람이 적재대를 확인하고 재시도("확인")하게 한다.
+- {"work_id":1,"type":"fail_load2"}: 프린터 배치 실패. 로봇/주문 상태는 바꾸지 않고
+  웹에 알럿만 띄운다 — 사람이 작업대를 눈으로 확인해 "네"를 누르면 서버가 로봇
+  대신 success_load2를 robot-events에 주입해 그 경로를 그대로 타게 하고, "아니오"면
+  관리자 문의 모달을 띄운다(상태 변경 없음).
 - {"work_id":1,"type":"success_unload1"}: 프린터에서 완성품 집기 성공. 비어있는
   수령대(1번 우선, 차 있으면 2번)를 골라 receive_pos_id로 unload2 명령을 보낸다.
 - {"work_id":1,"type":"success_unload2"}: 수령대 내려놓기 성공. 주문을
@@ -44,6 +48,7 @@ logger = logging.getLogger(__name__)
 _LOAD_SUCCESS_TYPE = "success_load1"
 _PLACE_SUCCESS_TYPE = "success_load2"
 _LOAD_PICK_FAILED_TYPE = "fail_load1"
+_PLACE_FAILED_TYPE = "fail_load2"
 _UNLOAD1_SUCCESS_TYPE = "success_unload1"
 _UNLOAD1_FAILED_TYPE = "fail_unload1"
 _UNLOAD2_SUCCESS_TYPE = "success_unload2"
@@ -138,6 +143,14 @@ class SqsConsumerService:
                 logger.error("fail_load1 work_id가 올바르지 않습니다: %s", body)
             except Exception:
                 logger.exception("fail_load1 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
+                return
+        elif body.get("type") == _PLACE_FAILED_TYPE and "work_id" in body:
+            try:
+                await WorkRequestService.handle_place_failed(int(body["work_id"]))
+            except (TypeError, ValueError):
+                logger.error("fail_load2 work_id가 올바르지 않습니다: %s", body)
+            except Exception:
+                logger.exception("fail_load2 처리 실패, 재시도를 위해 메시지를 남겨둡니다: %s", body)
                 return
         elif body.get("type") == _UNLOAD1_SUCCESS_TYPE and "work_id" in body:
             try:

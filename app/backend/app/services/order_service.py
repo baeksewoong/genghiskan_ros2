@@ -53,7 +53,11 @@ class OrderService:
             )
         await session.commit()
 
-        # 수령대 자리가 났다 — 수령대가 가득 차서 대기 중인 완성품이 있으면 unload2를 이어서 보낸다.
-        # (작업요청 SQS 경로 전용. 대기 주문이 없으면 아무것도 하지 않는다.)
+        # 수령대 자리가 났다 — 수령대가 가득 차서 대기 중인 완성품이 있으면 unload2를 이어서
+        # 보낸다(로봇이 이미 집어서 들고 있는 드문 경우의 방어 코드). 그리고 수령대가
+        # 가득 차서 unload1조차 보내지 못하고 PRINT_DONE으로 대기 중인 주문이 있으면
+        # 그것도 이어서 디스패치한다. (작업요청 SQS 경로 전용. 대기 주문이 없으면
+        # 아무것도 하지 않는다.)
         await WorkRequestService.dispatch_pending_unload2()
+        await WorkRequestService.dispatch_pending_robot_work()
         return order
