@@ -89,7 +89,15 @@ USE_MOVEL = True
 
 # ---------------------------------------------------------------- 집기 / 무게 감지
 LIFT_Z_MM = 30.0           # 잡은 뒤 들어 올리는 높이 (+Z, mm)
-WEIGHT_THRESHOLD_N = 0.7   # 들기 전/후 Fz 차이가 이 값(N) 이상이면 '무게 감지됨' (실측 후 조정)
+WEIGHT_THRESHOLD_N = 0.7   # (안 씀, 예전 무게 판정) 들기 전/후 Fz 차이 기준. 판재가 너무 가벼워 숙여 누르기로 바꿈
+# 판재 있음 판정 (2026-11-19): 잡고 30mm 들어 올린 뒤 ry로 앞쪽을 숙이면 판재 끝이 선반에 닿아 위로 밀어 올림.
+#   숙인 뒤 Fz가 기준보다 크면(덜 음수면) 판재 있음.
+#   숙이기 전 Fz는 그때그때 -11 ~ -15N으로 4N씩 달라서 차이(숙인 뒤 - 전)로는 기준이 흔들림 ->
+#   숙인 뒤 Fz 값 자체로 판정. 실측 9번: 있을 때 -11.66 ~ -12.06N, 없을 때 -12.70 ~ -13.06N -> 가운데 -12.4N
+TILT_CHECK_DEG = 9.0       # 숙이는 각도 (도). 판재 끝(약 215mm)이 약 34mm 내려가 선반에 닿음
+TILT_CHECK_FZ_N = -12.4    # 숙인 뒤 Fz가 이 값보다 크면 판재 있음
+TILT_CHECK_SETTLE_SEC = 1.0  # 숙이기 전/후 힘 재기 전 기다리는 시간 (s)
+TILT_CHECK_SAMPLES = 10    # 힘 평균 횟수 (FORCE_SAMPLE_INTERVAL 0.1s 간격 -> 약 1초)
 FORCE_SAMPLES = 5          # 힘 측정 평균 낼 횟수
 FORCE_SAMPLE_INTERVAL = 0.1  # 측정 간격 (s)
 SETTLE_SEC = 0.5           # 움직임이 끝나고 힘을 재기 전 기다리는 시간 (s)
@@ -286,28 +294,32 @@ def home_to_board(layer: int = 3, until: int | None = None, before_step=None) ->
         move()
 
 
-def grip_and_check(pose_x: list, log=print) -> bool:
-    """지금 위치(pose_x)에서 잡고 +Z로 들어 올린 뒤, 무게가 늘었는지 확인.
+def grip_and_check(pose_x: list, log=print, layer: int | None = None) -> bool:
+    """지금 위치(pose_x)에서 잡고 +Z로 들어 올린 뒤, 숙여 눌러서 판재가 있는지 확인.
 
-    1) 잡기 전 Fz 측정 (기준값)
-    2) 그리퍼 닫기
-    3) +Z LIFT_Z_MM 만큼 들어 올리기
-    4) 다시 Fz 측정 -> |차이| >= WEIGHT_THRESHOLD_N 이면 True
+    1) 그리퍼 닫기 -> +Z LIFT_Z_MM 들어 올리기
+    2) Fz 측정 (숙이기 전, 로그용)
+    3) 그리퍼 끝 위치 그대로 ry +TILT_CHECK_DEG (앞쪽 숙임) -> Fz 측정 (숙인 뒤) -> ry -TILT_CHECK_DEG 원래대로
+    4) 숙인 뒤 Fz > TILT_CHECK_FZ_N 이면 True (판재 끝이 선반에 닿아 위로 미는 반력)
+    판재가 너무 가벼워 무게(들기 전/후 Fz)로는 구분이 안 돼서 이 방식으로 바꿈 (2026-11-19).
+    layer를 주면 poses.TILT_CHECK_DEG_BY_LAYER / TILT_CHECK_FZ_BY_LAYER의 층별 값을 쓴다 (없으면 기본값).
     """
-    wait(SETTLE_SEC)
-    before = read_fz()
+    deg = getattr(poses, 'TILT_CHECK_DEG_BY_LAYER', {}).get(layer, TILT_CHECK_DEG)
+    fz_n = getattr(poses, 'TILT_CHECK_FZ_BY_LAYER', {}).get(layer, TILT_CHECK_FZ_N)
     grip_close()
     lifted = list(pose_x)
     lifted[2] += LIFT_Z_MM
     _movel_checked(lifted, vel=CARRY_VELX)   # 판재 들기
-    wait(SETTLE_SEC)
-    after = read_fz()
-    diff = after - before
-    picked = abs(diff) >= WEIGHT_THRESHOLD_N
-    log(f'[무게 감지] 전 Fz={before:.2f}N  후 Fz={after:.2f}N  차이={diff:+.2f}N  '
-        f'기준={WEIGHT_THRESHOLD_N}N  -> {picked}')
+    wait(TILT_CHECK_SETTLE_SEC)
+    fz0 = read_force_xyz(TILT_CHECK_SAMPLES)[2]
+    tilt_base('y', deg, log=log, check=False)
+    wait(TILT_CHECK_SETTLE_SEC)
+    fz1 = read_force_xyz(TILT_CHECK_SAMPLES)[2]
+    tilt_base('y', -deg, log=log, check=False)
+    picked = fz1 > fz_n
+    log(f'[판재 확인] {layer if layer is not None else "?"}층 ry +{deg:g}도 숙여 누르기: 전 Fz={fz0:.2f}N  숙인 뒤 Fz={fz1:.2f}N '
+        f'(차이 {fz1 - fz0:+.2f}N)  기준: 숙인 뒤 Fz > {fz_n}N  -> {"판재 있음" if picked else "판재 없음"}')
     return picked
-
 
 def pull_out(dist: float = PULL_OUT_MM, log=print) -> None:
     """지금 위치에서 높이(Z), 옆(Y), 자세는 그대로 두고 -X로 dist(mm)만큼 일자로 빼기.
@@ -1167,19 +1179,22 @@ def retreat_sd(layer: int = 3, log=print) -> None:
 
 
 # ---------------------------------------------------------------- 액션 콜백에서 호출
-def put_back_and_home(layer: int, log=print) -> None:
-    """(잡고 들어 올린 상태에서) 판재를 제자리에 내려놓고 그리퍼 열기 -> 들어간 길 거꾸로 빠져서 홈.
+PUT_BACK_RETREAT_MM = 100.0   # 판재 내려놓고 그리퍼 연 뒤 -X로 빠지는 거리 (mm), 그다음 바로 홈
 
-    잡는 곳으로 천천히 내림 -> 그리퍼 열기 -> 진입 전(X 뒤로) -> 진입 높이(Z 위로) -> 준비 -> 홈.
+
+def put_back_and_home(layer: int, log=print) -> None:
+    """(잡고 들어 올린 상태, 판재 확인의 ry는 이미 되돌린 뒤) 판재를 제자리에 내려놓고 홈으로.
+
+    잡는 곳으로 천천히 내림 -> 그리퍼 열기 -> -X로 PUT_BACK_RETREAT_MM 빠지기 -> 홈 (빈손 속도).
     """
-    log(f'[내려놓기] 적재대 {layer}층: 제자리로 내리기 -> 그리퍼 열기 -> 빠져서 홈')
-    _movel_slow(list(poses.START_POS_PICK_X[layer]), '잡는 곳(내려놓기)')
+    log(f'[내려놓기] 적재대 {layer}층: 제자리로 내리기 -> 그리퍼 열기 -> 뒤로 {PUT_BACK_RETREAT_MM:.0f}mm -> 홈')
+    pick = list(poses.START_POS_PICK_X[layer])
+    _movel_slow(pick, '잡는 곳(내려놓기)')
     grip_open()
     wait(SETTLE_SEC)
-    # 놓은 뒤라 빈손: 진입 전까지는 잡을 때와 같은 기본 속도(판재 옆을 지나감), 그다음부터 빠르게
-    _move_to(poses.START_POS_APPROACH_J.get(layer), poses.START_POS_APPROACH_X[layer])
-    go_entry_top(layer, fast=True)
-    go_ready(layer, fast=True)
+    back = list(pick)
+    back[0] -= PUT_BACK_RETREAT_MM
+    _movel_checked(back)   # 판재 옆을 지나가므로 기본 속도(VELX)
     go_home(fast=True)
     log('[내려놓기] 홈 도착 (빈손)')
 
@@ -1193,9 +1208,9 @@ def _load1_common(goal, name: str, log=print) -> bool:
     layer = goal.start_pos_id
     log(f'[{name}] 적재대 {layer}층')
     home_to_board(layer)
-    if grip_and_check(poses.START_POS_PICK_X[layer], log=log):
+    if grip_and_check(poses.START_POS_PICK_X[layer], log=log, layer=layer):
         return True
-    log(f'[{name}] 무게 감지 안 됨 -> 판재 내려놓고 홈으로 (결과 False)')
+    log(f'[{name}] 판재 없음 (숙여 누르기 확인) -> 판재 내려놓고 홈으로 (결과 False)')
     put_back_and_home(layer, log=log)
     return False
 

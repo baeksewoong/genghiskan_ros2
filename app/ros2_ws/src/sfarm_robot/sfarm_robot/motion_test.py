@@ -55,6 +55,152 @@ def _current_x():
     return list(get_current_posx()[0])
 
 
+WTEST_SAMPLES = 25        # wtest: 한 번 잴 때 평균 낼 횟수
+WTEST_INTERVAL = 0.04     # 측정 간격 (s) -> 25번이면 약 1초
+WTEST_SETTLE_SEC = 1.0    # 각 단계 전에 기다리는 시간 (s)
+
+
+def _fz_stats(motions, label: str) -> float:
+    """WTEST_SETTLE_SEC 기다린 뒤 Fz를 WTEST_SAMPLES번 재서 평균 / 흔들림 출력. 평균 반환."""
+    motions.wait(WTEST_SETTLE_SEC)
+    vals = []
+    for _ in range(WTEST_SAMPLES):
+        vals.append(float(motions.get_tool_force(motions.DR_BASE)[2]))
+        motions.wait(WTEST_INTERVAL)
+    mean = sum(vals) / len(vals)
+    sd = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+    print(f'  [{label}] Fz 평균 {mean:+.3f}N  흔들림(표준편차) {sd:.3f}N  '
+          f'최소 {min(vals):+.3f} 최대 {max(vals):+.3f}  ({len(vals)}번)')
+    return mean
+
+
+def weight_test(motions, put_back: bool = True) -> None:
+    """(적재대 잡는 위치, 그리퍼 열린 상태에서) 무게 감지 시험.
+
+    닫기 전 Fz -> 그리퍼 닫기 -> 닫은 뒤 Fz -> +Z LIFT_Z_MM 들기 -> 든 뒤 Fz
+    각 단계 WTEST_SETTLE_SEC 기다린 뒤 WTEST_SAMPLES번 평균. 끝나면 (put_back) 다시 내려놓고 그리퍼 열기.
+    """
+    start = _current_x()
+    print(f'[wtest] 시작 위치 {[round(v, 1) for v in start[:3]]}  '
+          f'(각 단계 {WTEST_SETTLE_SEC:.1f}초 대기 후 {WTEST_SAMPLES}번 평균)')
+    before = _fz_stats(motions, '1 닫기 전')
+    motions.grip_close()
+    closed = _fz_stats(motions, '2 닫은 뒤')
+    lifted_x = list(start)
+    lifted_x[2] += motions.LIFT_Z_MM
+    motions.movel(motions.posx(*lifted_x), vel=motions.INSERT_VELX, acc=motions.INSERT_ACCX)
+    lifted = _fz_stats(motions, f'3 {motions.LIFT_Z_MM:.0f}mm 든 뒤')
+    print(f'[wtest] 차이: 닫은 뒤-닫기 전 {closed - before:+.3f}N | '
+          f'든 뒤-닫은 뒤 {lifted - closed:+.3f}N (판재 무게만) | '
+          f'든 뒤-닫기 전 {lifted - before:+.3f}N (지금 load1 판정 방식, 기준 |{motions.WEIGHT_THRESHOLD_N}|N)')
+    if put_back:
+        motions.movel(motions.posx(*start), vel=motions.INSERT_VELX, acc=motions.INSERT_ACCX)
+        motions.grip_open()
+        print('[wtest] 제자리로 내리고 그리퍼 열기 -> 다시 wtest 가능')
+
+
+def weight_test_same_height(motions, put_back: bool = True) -> None:
+    """(적재대 잡는 위치, 그리퍼 열린 상태에서) 같은 높이 비교 무게 시험.
+
+    ① 그리퍼 닫기 -> +Z LIFT_Z_MM 들어서 Fz (잡고)
+    ② 제자리로 내려 그리퍼 열기 (판재 내려놓음) -> 다시 +Z LIFT_Z_MM 올라가서 Fz (빈 기준, 같은 자세)
+    -> 잡고 - 빈 기준 = 같은 자세에서 판재 무게만. 판재가 열린 그리퍼에 딸려 올라가지 않게 빈 기준은 내려놓은 뒤에 잰다.
+    각 단계 WTEST_SETTLE_SEC 기다린 뒤 WTEST_SAMPLES번 평균. 끝나면 (put_back) 시작 위치로 내려감 (그리퍼 열린 채).
+    """
+    start = _current_x()
+    up = list(start)
+    up[2] += motions.LIFT_Z_MM
+    v, a = motions.INSERT_VELX, motions.INSERT_ACCX
+    print(f'[wtest2] 시작 위치 {[round(x, 1) for x in start[:3]]}  (같은 높이 Z {up[2]:.1f}에서 잡고 / 빈 상태 비교)')
+    motions.grip_close()
+    motions.wait(WTEST_SETTLE_SEC)
+    motions.movel(motions.posx(*up), vel=v, acc=a)
+    held = _fz_stats(motions, f'1 잡고 {motions.LIFT_Z_MM:.0f}mm 위')
+    motions.movel(motions.posx(*start), vel=v, acc=a)
+    motions.grip_open()
+    motions.wait(WTEST_SETTLE_SEC)
+    motions.movel(motions.posx(*up), vel=v, acc=a)
+    empty = _fz_stats(motions, f'2 내려놓고 연 채로 {motions.LIFT_Z_MM:.0f}mm 위 (빈 기준)')
+    print(f'[wtest2] 차이 (잡고 - 빈 기준, 같은 자세): {held - empty:+.3f}N')
+    if put_back:
+        motions.movel(motions.posx(*start), vel=v, acc=a)
+        print('[wtest2] 시작 위치로 내려감 (그리퍼 열림) -> 다시 wtest2 가능')
+
+
+def weigh(motions, put_back: bool = True) -> None:
+    """(적재대 잡는 위치, 그리퍼 열린 상태에서) 잡고 +Z LIFT_Z_MM 들어서 Fz만 재서 출력.
+
+    1초 대기 후 WTEST_SAMPLES번 평균. 판재 있을 때 / 없을 때 각각 해서 값을 비교하는 용도.
+    끝나면 (put_back) 제자리로 내리고 그리퍼 열기.
+    """
+    start = _current_x()
+    up = list(start)
+    up[2] += motions.LIFT_Z_MM
+    motions.grip_close()
+    motions.movel(motions.posx(*up), vel=motions.INSERT_VELX, acc=motions.INSERT_ACCX)
+    _fz_stats(motions, f'잡고 {motions.LIFT_Z_MM:.0f}mm 든 뒤')
+    if put_back:
+        motions.movel(motions.posx(*start), vel=motions.INSERT_VELX, acc=motions.INSERT_ACCX)
+        motions.grip_open()
+        print('[weigh] 제자리로 내리고 그리퍼 열기 -> 다시 weigh 가능')
+
+
+def print_inputs() -> None:
+    """로봇 입력 상태를 한 번에 출력 (안 움직임). 그리퍼가 판재를 잡았는지 알려 주는 신호 찾기용.
+
+    컨트롤러 디지털 입력 1~16, 툴 디지털 입력 1~6, 그리퍼 제어 출력 1~2.
+    (아날로그 입력은 컨트롤러에 입력 모드가 설정돼 있지 않아 뺐음)
+    """
+    from DSR_ROBOT2 import get_digital_input, get_digital_output, get_tool_digital_input
+
+    def read(fn, idx):
+        try:
+            return fn(idx)
+        except Exception as exc:  # noqa: BLE001
+            return f'에러({exc})'
+
+    di = [read(get_digital_input, i) for i in range(1, 17)]
+    tdi = [read(get_tool_digital_input, i) for i in range(1, 7)]
+    do = [read(get_digital_output, i) for i in range(1, 3)]
+    print('[din] 컨트롤러 디지털 입력 1~16 : ' + ' '.join(f'{i + 1}:{v}' for i, v in enumerate(di)))
+    print('[din] 툴 디지털 입력 1~6        : ' + ' '.join(f'{i + 1}:{v}' for i, v in enumerate(tdi)))
+    print('[din] 그리퍼 제어 출력 1~2      : ' + ' '.join(f'{i + 1}:{v}' for i, v in enumerate(do))
+          + '   (1:1 2:0 = 닫힘, 1:0 2:1 = 열림)')
+
+
+def _force6_stats(motions, label: str) -> list:
+    """WTEST_SETTLE_SEC 기다린 뒤 힘 6개(Fx, Fy, Fz, Mx, My, Mz)를 WTEST_SAMPLES번 평균. 평균 반환."""
+    motions.wait(WTEST_SETTLE_SEC)
+    total = [0.0] * 6
+    for _ in range(WTEST_SAMPLES):
+        f = motions.get_tool_force(motions.DR_BASE)
+        for i in range(6):
+            total[i] += float(f[i])
+        motions.wait(WTEST_INTERVAL)
+    mean = [v / WTEST_SAMPLES for v in total]
+    print(f'  [{label}] Fx {mean[0]:+.3f} Fy {mean[1]:+.3f} Fz {mean[2]:+.3f} N | '
+          f'Mx {mean[3]:+.3f} My {mean[4]:+.3f} Mz {mean[5]:+.3f} Nm  ({WTEST_SAMPLES}번 평균)')
+    return mean
+
+
+def tilt_test(motions, deg: float = 3.0) -> None:
+    """(잡고 들어 올린 상태에서) 그리퍼 끝 위치 그대로 ry +deg(앞쪽 숙임) -> 판재 끝이 눌리는 힘 확인 -> 원래 자세로.
+
+    숙이기 전 / 숙인 뒤 힘 6개를 1초 대기 후 25번 평균해서 차이 출력. 판재가 있으면 숙일 때 반력이 생김.
+    """
+    if abs(deg) > 10.0:
+        raise ValueError(f'숙이는 각도는 10도까지만 (입력 {deg})')
+    print(f'[tilttest] ry {deg:+.1f}도로 숙여 누르는 힘 확인')
+    before = _force6_stats(motions, '숙이기 전')
+    motions.tilt_ry(deg)
+    after = _force6_stats(motions, f'ry {deg:+.1f}도 숙인 뒤')
+    d = [after[i] - before[i] for i in range(6)]
+    print(f'[tilttest] 차이 (숙인 뒤 - 전): Fx {d[0]:+.3f} Fy {d[1]:+.3f} Fz {d[2]:+.3f} N | '
+          f'Mx {d[3]:+.3f} My {d[4]:+.3f} Mz {d[5]:+.3f} Nm')
+    motions.tilt_ry(-deg)
+    print('[tilttest] 원래 자세로 되돌림')
+
+
 def move_z(motions, dz: float) -> None:
     """지금 위치에서 Z만 dz(mm) 만큼 직선 이동 (+ 올리기 / - 내리기). 그리퍼는 그대로."""
     cur = _current_x()
@@ -116,7 +262,7 @@ def put_back_and_leave(motions, layer: int = 3) -> None:
 def pick_from_board(motions, layer: int = 3) -> bool:
     """홈 -> 적재대 -> 잡고 들어 올려 무게 확인 -> 홈 복귀 (못 잡았으면 그리퍼 열고 복귀)."""
     motions.home_to_board(layer)
-    picked = motions.grip_and_check(motions.poses.START_POS_PICK_X[layer])
+    picked = motions.grip_and_check(motions.poses.START_POS_PICK_X[layer], layer=layer)
     if not picked:
         motions.grip_open()
     board_to_home(motions, layer, lifted=True)
@@ -309,6 +455,19 @@ def build_commands(motions):
         'pos': ('지금 좌표 출력 (안 움직임): posx [X, Y, Z, A, B, C] / posj [J1~J6]',
                 lambda a: print('posx = [{}]\nposj = [{}]'.format(
                     *[', '.join(f'{v:.2f}' for v in vals) for vals in reversed(motions.get_current_poses())]))),
+        'tilttest': ('[힘 시험] (잡고 든 상태) ry [도=3]만큼 앞쪽 숙여서 판재 끝 누르는 힘(Fx~Mz) 확인 -> 원래 자세로',
+                     lambda a: tilt_test(motions, float(a[0]) if a else 3.0)),
+        'din': ('[신호 확인] 디지털 입력(컨트롤러 1~16, 툴 1~6) / 그리퍼 출력 상태 출력 (안 움직임)',
+                lambda a: print_inputs()),
+        'weigh': ('[무게 시험] (적재대 잡는 위치, 그리퍼 열림) 잡고 30mm 들어서 Fz만 출력 (1초 대기 후 25번 평균) '
+                  '-> 내려놓고 열기 [keep = 든 채로 두기]',
+                  lambda a: weigh(motions, put_back=not (a and a[0].lower() == 'keep'))),
+        'wtest': ('[무게 시험] (적재대 잡는 위치, 그리퍼 열림) 닫기 전 / 닫은 뒤 / 든 뒤 Fz를 1초 대기 후 25번 평균 -> '
+                  '차이 출력 -> 다시 내려놓고 열기 [keep = 든 채로 두기]',
+                  lambda a: weight_test(motions, put_back=not (a and a[0].lower() == 'keep'))),
+        'wtest2': ('[무게 시험] 같은 높이 비교: 닫고 30mm 들어 Fz -> 내려놓고 열기 -> 빈 채로 30mm 위 Fz(빈 기준) -> 차이 '
+                   '-> 시작 위치로 내려감 [keep = 30mm 위에 두기]',
+                   lambda a: weight_test_same_height(motions, put_back=not (a and a[0].lower() == 'keep'))),
         'check': ('지금 위치에서 잡고 +Z 30mm 들기 -> 무게 확인 (층 상관없음)  => True/False', check),
         'force': ('현재 Fz(N) 측정', force),
         'grip': ('그리퍼 닫기', lambda a: motions.grip_close()),
