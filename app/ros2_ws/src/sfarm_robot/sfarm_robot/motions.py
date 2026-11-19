@@ -1326,6 +1326,15 @@ def unload_leave_layer(layer: int, log=print) -> None:
     unload_move_step(unload_poses.UNLOAD_BRANCH_FROM, log=log)
 
 
+def unload_retreat_home(layer: int, log=print) -> None:
+    """잡기 실패 후 올 때 길을 역순으로: 언로드 layer층 -> (층 진입전) -> 진입전2 -> ... -> 진입전1 -> 홈."""
+    frm = unload_poses.UNLOAD_BRANCH_FROM
+    log(f'  [복귀] 언로드{layer} 잡기 실패 -> 왔던 길을 거꾸로 홈까지')
+    unload_leave_layer(layer, log=log)
+    for n in sorted((k for k in unload_poses.UNLOAD_J if k < frm), reverse=True):
+        unload_move_step(n, log=log)
+
+
 def unload_grab_pull(layer: int, log=print) -> bool:
     """베드판을 잡고 -X로 당겨 턱에 걸리는 힘이 들어오는지 확인.
 
@@ -1390,7 +1399,7 @@ def run_unload1(goal: Unload1.Goal, log=print) -> bool:
     """Unload1: 홈 -> 진입전2 -> 작업대(sd_pos_id층) -> 잡고 -X 당겨 턱 걸림 확인.
 
     반환값: 베드판을 잡아 턱에 걸리는 힘이 감지됐으면 True (당긴 채로 멈춤),
-            감지되지 않았으면 원위치 복귀 및 그리퍼 열기 후 False.
+            감지되지 않았으면 원위치 복귀 및 그리퍼 열기 후 진입전2 -> ... -> 홈으로 역순 복귀하고 False.
     좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
     """
     global _last_unload_layer
@@ -1418,7 +1427,10 @@ def run_unload1(goal: Unload1.Goal, log=print) -> bool:
     unload_enter_layer(layer, log=log)
     log(f'  언로드{layer} 도착 -> {UNLOAD_ARRIVE_WAIT_SEC:.0f}초 대기 후 잡기')
     wait(UNLOAD_ARRIVE_WAIT_SEC)
-    return unload_grab_pull(layer, log=log)
+    if unload_grab_pull(layer, log=log):
+        return True
+    unload_retreat_home(layer, log=log)   # 못 잡음 -> 진입전2 -> ... -> 홈으로 역순 복귀
+    return False
 
 
 def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool:
