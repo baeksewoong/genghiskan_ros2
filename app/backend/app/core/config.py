@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     event_queue_url: str = ""
     sqs_poll_wait_sec: int = 20
 
+    # 실물 로봇 조인트 각도 실시간 피드(/ws/robot-state, ROS2 → 백엔드) 인증 토큰.
+    # 이 엔드포인트는 외부에 노출될 수 있는 "쓰기" 경로이므로 event_queue_url류와
+    # 달리 "비어있으면 기능 끔"이 아니라 "비어있으면 거부(fail-closed)"가 기본값이다 —
+    # 토큰을 명시적으로 설정하지 않으면 /ws/robot-state는 어떤 연결도 받지 않는다.
+    robot_state_ws_token: str | None = None
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
