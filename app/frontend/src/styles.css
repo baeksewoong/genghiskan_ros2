@@ -286,7 +286,8 @@ body {
 
 .board-stock-list,
 .receive-pos-list,
-.printer-list {
+.printer-list,
+.order-queue-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -297,7 +298,8 @@ body {
 
 .board-stock-list li,
 .receive-pos-list li,
-.printer-list li {
+.printer-list li,
+.order-queue-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -728,6 +730,12 @@ button:disabled {
   color: #ff8a8a;
 }
 
+.order-queue-empty {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #9aa0ab;
+}
+
 /* ===================================================================
  * 홈 화면 키오스크 (DashboardTemplate / DashboardPage)
  * 무인 3D 프린터 매장에서 손님이 직접 터치하는 화면 — 작은 패널 나열이 아니라
@@ -896,7 +904,8 @@ button:disabled {
 /* 현황판 안의 리스트/Pill은 터치 친화적으로 더 크게. */
 .kiosk-card .board-stock-list li,
 .kiosk-card .printer-list li,
-.kiosk-card .receive-pos-list li {
+.kiosk-card .receive-pos-list li,
+.kiosk-card .order-queue-list li {
   padding: 0.9rem 1.1rem;
   border-radius: 10px;
   background: #242933;
