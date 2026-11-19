@@ -442,6 +442,8 @@ def build_commands(motions):
                     lambda a: motions.retreat_sd(int(a[0]) if a else 3)),
         'enter': ('(sd 후) 작업대 [층=1]에 다가가기만: sd 3 -> 다가가기 순서 끝(넣기 전, 1층은 up 10 뒤)에서 멈춤. 그리퍼 그대로',
                   lambda a: motions.approach_sd(int(a[0]) if a else 1)),
+        'inpush': ('(enter 후) 지금 위치(입구)부터 넣기만: 3초 멈춤 -> 직선 -> 순응 밀기 -> 그리퍼 열기 [층=2] (1층은 안 됨)',
+                   lambda a: motions.insert_sd(int(a[0]) if a else 2, from_entrance=True)),
         'insert': ('(sd 후) 작업대 [층=3]에 넣기 (sd에서 정렬한 자세 유지): 좌우 흔들며 진입 -> 순응 제어로 밀어 완료 위치+힘 맞으면 놓기  => True/False',
                    lambda a: motions.insert_sd(int(a[0]) if a else 3, keep_ori=True)),
         'load2': ('run_load2 [sd_pos_id(층)=3] (액션과 같은 동작: 빼기 -> 작업대 층)  => True/False',

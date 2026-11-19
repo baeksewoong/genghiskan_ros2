@@ -980,7 +980,7 @@ def _check_force_and_release(layer: int, log=print) -> bool:
     return True
 
 
-def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
+def insert_sd(layer: int = 3, log=print, keep_ori: bool = False, from_entrance: bool = False) -> bool:
     """작업대 layer층에 판재를 넣고, 끝 위치 + 반력이 맞으면 놓기. 자세는 측정값 그대로.
 
     0) SD_PRE_INSERT (sd 다음 첫 점)로 movel -> PRE_INSERT_HOLD_SEC(3초) 멈춤
@@ -1003,6 +1003,8 @@ def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
     위치 이동 중 힘이 JAM_FORCE_N 넘으면 예외 (잡은 채로 멈춤).
     """
     if getattr(poses, 'SD_INSERT_CHECK_ONLY', {}).get(layer):
+        if from_entrance:
+            raise ValueError(f'{layer}층은 마지막 fwd에서 힘을 확인하는 방식이라 입구부터 넣기(inpush)를 못 씀 -> insert {layer}')
         return _check_force_and_release(layer, log=log)
     front, done, u, length = _insert_line(layer)
     pre = _insert_pre(layer)
@@ -1011,7 +1013,14 @@ def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
     if keep_ori:
         log('[넣기] (sd 축정렬 자세 대신 측정한 자세를 씀)')
 
-    if _uses_approach(layer):
+    if from_entrance:
+        # (motion_test inpush) 이미 enter로 다가가기 끝(입구)에 와 있음 -> 다가가기 건너뜀
+        cur = list(get_current_posx()[0])
+        err = max(abs(cur[i] - pre[i]) for i in range(3))
+        log(f'[넣기] 입구부터 넣기: 지금 {[round(v, 1) for v in cur[:3]]} (입구와 차이 {err:.1f}mm)')
+        if err > 20.0:
+            raise RuntimeError(f'입구에서 너무 멂 (차이 {err:.1f}mm). enter {layer} 먼저 할 것')
+    elif _uses_approach(layer):
         approach_sd(layer, log=log)   # sd 3에서 다가가기 순서대로 (마지막 점 = 입구 전 대기 위치)
     elif _uses_align(layer):
         # 언로드 정렬 방식: 정렬 앞(= 입구)으로 movej (계산한 관절값) 후 위치 확인
@@ -1067,13 +1076,14 @@ def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
     base = read_force_xyz()
     react_n = getattr(poses, 'SD_DONE_REACT_N', {}).get(layer, DONE_REACT_N)   # 층별 반력 기준
     cond = (f'반력 >= {react_n}N (끝 좌표 없음, 위치 조건 없음)' if push_only
-            else f'진행 >= {length - DONE_POS_TOL_MM:.1f}mm 그리고 반력 >= {react_n}N')
+            else f'진행 >= {length - DONE_POS_TOL_MM:.1f}mm 그리고 반력 > {react_n}N')
     log(f'[넣기] 순응 제어로 밀기: 직선 {s0:.1f} -> 최대 {s_max:.1f}mm, {PUSH_STEP_MM:.0f}mm씩 (완료: {cond})')
     # X 강성: 끝에 막힌 채 목표가 끝 + PUSH_OVERSHOOT_MM이면 PUSH_FORCE_N으로 누르게
     stx = list(COMPLIANCE_STX)
     stx[0] = PUSH_FORCE_N / (PUSH_OVERSHOOT_MM / 1000.0)
     log(f'[넣기] 순응 강성 X {stx[0]:.0f}N/m ({stx[0] / 1000:.2f}N/mm, 끝 +{PUSH_OVERSHOOT_MM:.0f}mm에서 약 {PUSH_FORCE_N}N)')
     finished = False
+    max_react, max_at, last_f = -1e9, 0.0, [0.0, 0.0, 0.0]   # 힘 요약용
     if _keep_z(layer):
         # 높이 고정: Z(위아래)는 최대 강성 -> 밀 때 내려앉지 않게 (순응 기준 좌표계는 DSR 기본값 DR_BASE)
         stx[2] = KEEP_Z_STIFF_N_M
@@ -1090,8 +1100,11 @@ def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
             s_now = sum((cur[i] - front[i]) * u[i] for i in range(3))   # 직선 위 진행 거리
             lag = st - s_now
             react = -sum((f[i] - base[i]) * u[i] for i in range(3))     # 미는 방향 반력 (+ = 밀림)
+            last_f = [f[i] - base[i] for i in range(3)]
+            if react > max_react:
+                max_react, max_at = react, st
             reached = push_only or s_now >= length - DONE_POS_TOL_MM
-            force_ok = react >= react_n
+            force_ok = react > react_n   # 기준 초과 (기준 0N이면 반력이 양수가 되는 순간)
             msg = (f'  [밀기 {st:.1f}mm] 진행 {s_now:.1f}mm (끝까지 {length - s_now:+.1f}mm, 덜 감 {lag:.1f}mm) '
                    f'반력 {react:+.2f}N  Fx={f[0]:+.2f} Fy={f[1]:+.2f} Fz={f[2]:+.2f}  '
                    f'위치{"O" if reached else "X"} 힘{"O" if force_ok else "X"}')
@@ -1106,6 +1119,8 @@ def insert_sd(layer: int = 3, log=print, keep_ori: bool = False) -> bool:
         # 순응 해제 = 지금 위치에서 위치 제어로 고정. 이걸 먼저 해야 그리퍼를 열었을 때
         # 눌려 있던 스프링 힘 때문에 손목이 앞으로 튀어 나가지 않는다.
         release_compliance_ctrl()
+    log(f'[넣기] 힘 요약: 최대 반력 {max_react:+.2f}N ({max_at:.0f}mm에서), 마지막 힘 변화 '
+        f'dFx={last_f[0]:+.2f} dFy={last_f[1]:+.2f} dFz={last_f[2]:+.2f}N (기준 반력 {react_n}N)')
     # 밀기가 끝나면 완료 여부와 상관없이 항상 그리퍼 열기 (순응 해제 뒤)
     grip_open()
     if finished:
