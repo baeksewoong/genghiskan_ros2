@@ -66,8 +66,8 @@ async def test_print_done_sends_unload1_for_sqs_dispatched_order(monkeypatch):
 
     await TimerService._sweep_print_timers()
 
-    # 테스트용 임시 조치로 sd_pos_id를 3으로 하드코딩해 발행한다 (실제 printer.slot=1과 무관).
-    assert sent == [{"work_id": order.id, "sd_pos_id": 3}]
+    # 테스트용 임시 조치로 sd_pos_id를 1로 하드코딩해 발행한다 (실제 printer.slot=1과 무관).
+    assert sent == [{"work_id": order.id, "sd_pos_id": 1}]
 
     async with AsyncSessionLocal() as session:
         refreshed = await session.get(Order, order.id)

@@ -189,8 +189,8 @@ class WorkRequestService:
                 task.assign_printer(printer.slot)
             await session.flush()
 
-            # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
-            produced = await SqsProducerService.produce_place_command(work_id=work_id, sd_pos_id=3)
+            # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 1로 하드코딩해 발행 중 — 테스트용 임시 조치.
+            produced = await SqsProducerService.produce_place_command(work_id=work_id, sd_pos_id=1)
             if not produced:
                 await session.rollback()
                 logger.error(
@@ -444,9 +444,9 @@ class WorkRequestService:
             if order is None or order.status != OrderStatus.PRINT_DONE:
                 raise UnloadRetryNotFoundError(work_id)
 
-        # TODO: 실제 프린터 슬롯이 아니라 3으로 하드코딩해 발행 중 — TimerService의 첫 unload1과 동일한 임시 조치.
+        # TODO: 실제 프린터 슬롯이 아니라 1로 하드코딩해 발행 중 — TimerService의 첫 unload1과 동일한 임시 조치.
         produced = await SqsProducerService.produce_unload_command(
-            work_id=work_id, sd_pos_id=3, retry_token=uuid.uuid4().hex[:12]
+            work_id=work_id, sd_pos_id=1, retry_token=uuid.uuid4().hex[:12]
         )
         if not produced:
             raise SqsProduceError(work_id)
