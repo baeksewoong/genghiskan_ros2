@@ -256,6 +256,8 @@ def build_commands(motions):
 
     return {
         'home': ('홈으로 바로 이동 (적재대 안에서는 쓰지 말 것 -> back)', lambda a: motions.go_home()),
+        'homef': ('홈으로 빠르게 이동 (빈손 속도 EMPTY_VELJ=100, retreat 뒤 빈손일 때만)',
+                  lambda a: motions.go_home(fast=True)),
         'board': ('홈 -> 적재대 [층=3] [멈출 단계: 0홈 1준비 2진입높이 3진입전 4적재대]', board),
         'board_step': ('홈 -> 적재대 [층=3] 한 단계씩 (Enter=진행, q=멈춤)', board_step),
         'j1': ('[시험] J1(몸통)만 [도]만큼 돌리기 (기본 -5, - = 프린터 쪽, 느리게) (그리퍼 그대로)', j1),
@@ -292,6 +294,8 @@ def build_commands(motions):
                     rackout),
         'retreat': ('(insert로 놓은 뒤) 그리퍼만 넣은 길 그대로 거꾸로 빼서 진입 대기 위치로 [층=3] (그리퍼 그대로)',
                     lambda a: motions.retreat_sd(int(a[0]) if a else 3)),
+        'enter': ('(sd 후) 작업대 [층=1]에 다가가기만: sd 3 -> 다가가기 순서 끝(넣기 전, 1층은 up 10 뒤)에서 멈춤. 그리퍼 그대로',
+                  lambda a: motions.approach_sd(int(a[0]) if a else 1)),
         'insert': ('(sd 후) 작업대 [층=3]에 넣기 (sd에서 정렬한 자세 유지): 좌우 흔들며 진입 -> 순응 제어로 밀어 완료 위치+힘 맞으면 놓기  => True/False',
                    lambda a: motions.insert_sd(int(a[0]) if a else 3, keep_ori=True)),
         'load2': ('run_load2 [sd_pos_id(층)=3] (액션과 같은 동작: 빼기 -> 작업대 층)  => True/False',
