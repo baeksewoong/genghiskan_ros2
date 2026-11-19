@@ -396,6 +396,52 @@ body {
   overflow-x: auto;
 }
 
+/* 작업 히스토리 페이지 (organisms/WorkHistoryPanel) */
+
+.work-history-panel {
+  margin: 0 1rem 1rem;
+}
+
+.work-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
+.work-history-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.6rem 0.75rem;
+  background: #20242d;
+  border-radius: 6px;
+}
+
+.work-history-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.work-history-id {
+  font-weight: 600;
+  color: #9aa0ab;
+}
+
+.work-history-times {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: #6fb3ff;
+}
+
 .button-row {
   display: flex;
   gap: 0.5rem;

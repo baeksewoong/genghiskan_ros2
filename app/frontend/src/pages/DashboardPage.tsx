@@ -5,6 +5,8 @@ import { BoardStockPanel } from "../components/organisms/BoardStockPanel";
 import { BoardStockRefillModal } from "../components/organisms/BoardStockRefillModal";
 import { LoadPickFailedModal } from "../components/organisms/LoadPickFailedModal";
 import { UnloadPickFailedModal } from "../components/organisms/UnloadPickFailedModal";
+import { PlaceFailedModal } from "../components/organisms/PlaceFailedModal";
+import { AdminContactModal } from "../components/organisms/AdminContactModal";
 import { ReceivePosFullModal } from "../components/organisms/ReceivePosFullModal";
 import { ReceivePosPanel } from "../components/organisms/ReceivePosPanel";
 import { PrinterPanel } from "../components/organisms/PrinterPanel";
@@ -21,6 +23,8 @@ export function DashboardPage() {
     setLoadFailedAlert,
     unloadFailedAlert,
     setUnloadFailedAlert,
+    placeFailedAlert,
+    setPlaceFailedAlert,
     receivePosFullAlert,
     setReceivePosFullAlert,
     boardStock,
@@ -28,6 +32,7 @@ export function DashboardPage() {
     snapshot,
   } = useLiveState();
   const [orderError, setOrderError] = useState<string | null>(null);
+  const [adminContactOpen, setAdminContactOpen] = useState(false);
 
   // 수령대 칸에 올라간 주문 상세 조회용: 이동 중(UNLOADING)은 active, 수령 대기는 pickup에 있다.
   const receiveOrders = [...(snapshot?.active_orders ?? []), ...(snapshot?.pickup_orders ?? [])];
@@ -81,6 +86,22 @@ export function DashboardPage() {
     }
   };
 
+  const handleConfirmPlaceYes = async (workId: number) => {
+    // handleRetryLoad와 동일: 전송이 실패해도 모달은 닫고 콘솔에 남긴다.
+    try {
+      await api.confirmPlace(workId);
+    } catch (e) {
+      console.error("배치 확인 전송 실패:", e);
+    } finally {
+      setPlaceFailedAlert(null);
+    }
+  };
+
+  const handleConfirmPlaceNo = () => {
+    setPlaceFailedAlert(null);
+    setAdminContactOpen(true);
+  };
+
   return (
     <DashboardTemplate
       orderForm={<OrderForm onOrder={handleOrder} error={orderError} />}
@@ -100,6 +121,8 @@ export function DashboardPage() {
           <BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />
           <LoadPickFailedModal alert={loadFailedAlert} onConfirm={handleRetryLoad} />
           <UnloadPickFailedModal alert={unloadFailedAlert} onConfirm={handleRetryUnload} />
+          <PlaceFailedModal alert={placeFailedAlert} onYes={handleConfirmPlaceYes} onNo={handleConfirmPlaceNo} />
+          <AdminContactModal open={adminContactOpen} onClose={() => setAdminContactOpen(false)} />
           <ReceivePosFullModal alert={receivePosFullAlert} onClose={() => setReceivePosFullAlert(null)} />
         </>
       }
