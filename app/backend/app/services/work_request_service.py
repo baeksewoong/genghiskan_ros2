@@ -35,12 +35,9 @@ _SHAPE_CHOICES = list(Shape)
 
 
 class BoardEmptyError(Exception):
-    """적재대에 베드가 비어있어 작업요청을 디스패치할 수 없을 때. 주문 행 자체는
-    이미 WAITING으로 저장돼 있다 (PRD 3장 2단계)."""
-
-    def __init__(self, order_id: int):
-        self.order_id = order_id
-        super().__init__(f"board empty for order {order_id}")
+    """적재대에 베드가 하나도 없어 작업요청 자체를 접수하지 않을 때. 주문 행은
+    아직 만들어지지 않는다 — 사람이 적재대를 채우고 "채우기 완료"를 누른 뒤
+    다시 요청해야 한다."""
 
 
 class UnloadRetryNotFoundError(Exception):
@@ -77,43 +74,111 @@ class WorkRequestService:
         shape: Shape | None,
         customer_name: str | None = None,
     ) -> Order:
-        order = await WorkRequestService._insert_order(session, shape, customer_name)
-
         # 티칭 팬던트(실물 로봇 조그) 세션이 활성 중이면 로봇이 조그/그리퍼 명령
         # 전용이어야 하므로 LOAD를 보내지 않는다 (PRD: prd-teaching-pendant.md 3장 B).
-        # 베드가 없을 때(BoardEmptyError)와 달리 이건 에러가 아니다 — 주문은 그대로
-        # WAITING으로 남기고 201(대기 등록) 응답을 돌려준다. 조그 세션 체크를 베드
-        # 확인보다 먼저 두어, 세션 중에는 베드 예약조차 건드리지 않는다.
+        # 베드가 없을 때(BoardEmptyError)와 달리 이건 에러가 아니다 — 주문은 WAITING으로
+        # 등록하고 201(대기 등록) 응답을 돌려준다. 조그 세션 체크를 베드 확인보다 먼저
+        # 두어, 세션 중에는 베드 예약조차 건드리지 않는다.
         if TeachingPendantService.is_session_active():
+            order = await WorkRequestService._insert_order(session, shape, customer_name)
             logger.info(
                 "조그 세션이 활성 중이라 작업요청 LOAD를 보류합니다 (order_id=%s, WAITING 유지)", order.id
             )
             return order
 
+        # 적재대에 베드가 하나도 없으면 주문 자체를 만들지 않는다 — 로봇 바쁨/프린터
+        # 가득 참과 달리, 이건 사람이 적재대를 채우고 "채우기 완료"를 눌러야 풀리는
+        # 상황이라 자동 재시도 대기열에 넣어두는 의미가 없다.
+        await WorkRequestService._ensure_board_available()
+
+        order = await WorkRequestService._insert_order(session, shape, customer_name)
+        dispatched = await WorkRequestService._try_dispatch_load1(order.id)
+        return dispatched if dispatched is not None else order
+
+    @staticmethod
+    async def _ensure_board_available() -> None:
+        """적재대에 베드가 하나도 없으면 BoardEmptyError를 던진다 — 호출 시점에
+        아직 주문을 만들지 않았으므로 DB에 아무것도 남기지 않는다. "채우기 완료"
+        전까지는 같은 요청을 다시 보내도 매번 이 단계에서 걸린다."""
+        async with AsyncSessionLocal() as session:
+            board = await BoardStockRepository.top_occupied_locked(session)
+            if board is None:
+                await broadcast_to_web(
+                    session, "alert.refill_required", {"reason": AlertReason.BOARD_STOCK_EMPTY.value}
+                )
+                await session.commit()
+                raise BoardEmptyError()
+            await session.rollback()
+
+    @staticmethod
+    async def _try_dispatch_load1(order_id: int) -> Order | None:
+        """WAITING 주문의 load1(베드 집기)을 디스패치한다. LOAD1~LOAD2,
+        UNLOAD1~UNLOAD2는 각각 한 세트로 묶여야 해서 로봇이 이미 다른 작업
+        중이면 끼어들면 안 된다 — get_active_real_robot_task_locked로 확인해,
+        로봇이 바쁘면 아무것도 하지 않고 None을 반환해 WAITING으로 둔다(로봇이
+        비면 dispatch_pending_robot_work가 이어서 재시도한다). 베드가 없으면
+        BoardEmptyError, SQS 발행 실패면 SqsProduceError를 그대로 던진다.
+
+        디스패치 순서 보장: WAITING 중 이 주문보다 먼저 들어온 게 있으면(예: 로봇이
+        바빠서, 혹은 베드가 없어서 먼저 밀려 있던 주문) 이 주문을 새치기해서
+        디스패치하지 않는다 — 가장 오래 기다린 주문부터 처리되도록 None을 반환해
+        그대로 WAITING으로 둔다(dispatch_pending_robot_work가 순서대로 이어서 처리한다).
+
+        빈 프린터 선점: 빈 프린터가 하나도 없으면 load1도 보내지 않는다. 로봇이
+        베드를 집고 나서(success_load1) 놓을 프린터가 없으면 로봇이 베드를 든 채로
+        멈춰버리고, 로봇이 하나뿐이라 그 사이엔 unload조차 못 보내 영구적으로
+        멈추는 상태(dead-lock)가 되기 때문이다. 프린터가 비는 즉시(success_unload2
+        등) dispatch_pending_robot_work가 재시도한다."""
         async with AsyncSessionLocal() as session2:
+            busy = await RobotTaskRepository.get_active_real_robot_task_locked(session2)
+            if busy is not None:
+                await session2.rollback()
+                logger.info(
+                    "로봇이 다른 작업(LOAD/UNLOAD) 중이라 load1 디스패치를 보류합니다 (order_id=%s)",
+                    order_id,
+                )
+                return None
+
+            waiting_orders = await OrderRepository.get_waiting(session2)
+            if waiting_orders and waiting_orders[0].id != order_id:
+                oldest_waiting_id = waiting_orders[0].id
+                await session2.rollback()
+                logger.info(
+                    "더 오래 기다린 작업요청(order_id=%s)이 있어 load1 디스패치를 보류합니다 (order_id=%s)",
+                    oldest_waiting_id,
+                    order_id,
+                )
+                return None
+
+            if await PrinterRepository.first_empty_locked(session2) is None:
+                await session2.rollback()
+                logger.info(
+                    "빈 프린터가 없어 load1 디스패치를 보류합니다 (order_id=%s)", order_id
+                )
+                return None
+
             board = await BoardStockRepository.top_occupied_locked(session2)
             if board is None:
                 await broadcast_to_web(
                     session2, "alert.refill_required", {"reason": AlertReason.BOARD_STOCK_EMPTY.value}
                 )
                 await session2.commit()
-                raise BoardEmptyError(order.id)
+                raise BoardEmptyError()
 
             now = datetime.utcnow()
             board.reserve(now)
 
-            task = RobotTask.dispatch_load_request(order_id=order.id, start_pos_id=board.slot, now=now)
+            task = RobotTask.dispatch_load_request(order_id=order_id, start_pos_id=board.slot, now=now)
             RobotTaskRepository.add(session2, task)
 
-            order_db = await OrderRepository.get_locked(session2, order.id)
+            order_db = await OrderRepository.get_locked(session2, order_id)
             order_db.mark_dispatching(now)
             await session2.flush()
 
-            # TODO: 실제 적재대 슬롯(board.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
-            produced = await SqsProducerService.produce_load_command(work_id=order.id, start_pos_id=3)
+            produced = await SqsProducerService.produce_load_command(work_id=order_id, start_pos_id=board.slot)
             if not produced:
                 await session2.rollback()
-                raise SqsProduceError(order.id)
+                raise SqsProduceError(order_id)
 
             await broadcast_to_web(
                 session2, "order.updated", (await build_order_out(session2, order_db)).model_dump(mode="json")
@@ -139,7 +204,7 @@ class WorkRequestService:
                 await session.rollback()
                 return
 
-            task = await RobotTaskRepository.get_active_load_for_order_locked(session, work_id)
+            task = await RobotTaskRepository.get_active_task_for_order_locked(session, work_id)
             if task is None or task.start_pos_id is None:
                 await session.rollback()
                 return
@@ -182,15 +247,14 @@ class WorkRequestService:
             printer.reserve(work_id, now)
 
             order = await OrderRepository.get_locked(session, work_id)
-            task = await RobotTaskRepository.get_active_load_for_order_locked(session, work_id)
+            task = await RobotTaskRepository.get_active_task_for_order_locked(session, work_id)
             if order is not None:
                 order.assign_printer(printer.slot, now)
             if task is not None:
                 task.assign_printer(printer.slot)
             await session.flush()
 
-            # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 1로 하드코딩해 발행 중 — 테스트용 임시 조치.
-            produced = await SqsProducerService.produce_place_command(work_id=work_id, sd_pos_id=1)
+            produced = await SqsProducerService.produce_place_command(work_id=work_id, sd_pos_id=printer.slot)
             if not produced:
                 await session.rollback()
                 logger.error(
@@ -220,7 +284,7 @@ class WorkRequestService:
                 await session.rollback()
                 return
 
-            task = await RobotTaskRepository.get_active_load_for_order_locked(session, work_id)
+            task = await RobotTaskRepository.get_active_task_for_order_locked(session, work_id)
             if task is None or task.printer_slot is None:
                 await session.rollback()
                 return
@@ -243,6 +307,9 @@ class WorkRequestService:
                 session, "printer.updated", (await build_printer_out(session, printer)).model_dump(mode="json")
             )
             await session.commit()
+
+        # load1~load2 한 세트가 끝나 로봇이 비었다 — 밀려 있던 unload1/load1을 이어서 시도한다.
+        await WorkRequestService.dispatch_pending_robot_work()
 
     @staticmethod
     async def handle_load_pick_failed(work_id: int) -> None:
@@ -284,6 +351,11 @@ class WorkRequestService:
 
             now = datetime.utcnow()
             order.mark_unloading(now)
+
+            task = await RobotTaskRepository.get_active_task_for_order_locked(session, work_id)
+            if task is not None:
+                task.mark_running(now)
+
             printer = (
                 await PrinterRepository.get_locked(session, order.printer_slot)
                 if order.printer_slot is not None
@@ -385,6 +457,11 @@ class WorkRequestService:
 
             now = datetime.utcnow()
             order.mark_ready_for_pickup(now)
+
+            task = await RobotTaskRepository.get_active_task_for_order_locked(session, work_id)
+            if task is not None:
+                task.mark_succeeded(now)
+
             receive_pos = await ReceivePosRepository.get_by_order_locked(session, work_id)
             if receive_pos is not None:
                 receive_pos.occupy(now)
@@ -396,6 +473,9 @@ class WorkRequestService:
                 session, "receive_pos.updated", await WorkRequestService._receive_pos_snapshot(session)
             )
             await session.commit()
+
+        # unload1~unload2 한 세트가 끝나 로봇이 비었다 — 밀려 있던 unload1/load1을 이어서 시도한다.
+        await WorkRequestService.dispatch_pending_robot_work()
 
     @staticmethod
     async def handle_unload1_failed(work_id: int) -> None:
@@ -420,16 +500,16 @@ class WorkRequestService:
                 await session.rollback()
                 raise LoadRetryNotFoundError(work_id)
 
-            task = await RobotTaskRepository.get_active_load_for_order_locked(session, work_id)
+            task = await RobotTaskRepository.get_active_task_for_order_locked(session, work_id)
             if task is None or task.start_pos_id is None:
                 await session.rollback()
                 raise LoadRetryNotFoundError(work_id)
 
+            start_pos_id = task.start_pos_id
             await session.rollback()
 
-        # TODO: 실제 start_pos_id가 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
         produced = await SqsProducerService.produce_load_command(
-            work_id=work_id, start_pos_id=3, retry_token=uuid.uuid4().hex[:12]
+            work_id=work_id, start_pos_id=start_pos_id, retry_token=uuid.uuid4().hex[:12]
         )
         if not produced:
             raise SqsProduceError(work_id)
@@ -441,15 +521,80 @@ class WorkRequestService:
         상태를 바꾸지 않으므로 주문은 여전히 PRINT_DONE이어야 한다."""
         async with AsyncSessionLocal() as session:
             order = await OrderRepository.get(session, work_id)
-            if order is None or order.status != OrderStatus.PRINT_DONE:
+            if order is None or order.status != OrderStatus.PRINT_DONE or order.printer_slot is None:
                 raise UnloadRetryNotFoundError(work_id)
+            printer_slot = order.printer_slot
 
-        # TODO: 실제 프린터 슬롯이 아니라 1로 하드코딩해 발행 중 — TimerService의 첫 unload1과 동일한 임시 조치.
         produced = await SqsProducerService.produce_unload_command(
-            work_id=work_id, sd_pos_id=1, retry_token=uuid.uuid4().hex[:12]
+            work_id=work_id, sd_pos_id=printer_slot, retry_token=uuid.uuid4().hex[:12]
         )
         if not produced:
             raise SqsProduceError(work_id)
+
+    @staticmethod
+    async def _try_dispatch_unload1(order_id: int) -> bool:
+        """출력이 끝난(PRINT_DONE) 주문의 unload1(완성품 꺼내기)을 디스패치한다.
+        _try_dispatch_load1과 같은 이유로 로봇이 이미 다른 작업 중이면 디스패치하지
+        않는다 — 그 경우 이 주문은 robot_task가 없는 PRINT_DONE으로 남아
+        dispatch_pending_robot_work가 로봇이 빌 때 다시 찾아 재시도한다."""
+        async with AsyncSessionLocal() as session:
+            busy = await RobotTaskRepository.get_active_real_robot_task_locked(session)
+            if busy is not None:
+                await session.rollback()
+                return False
+
+            order = await OrderRepository.get_locked(session, order_id)
+            if order is None or order.status != OrderStatus.PRINT_DONE or order.printer_slot is None:
+                await session.rollback()
+                return False
+
+            now = datetime.utcnow()
+            task = RobotTask.dispatch_unload_request(order_id=order_id, printer_slot=order.printer_slot, now=now)
+            RobotTaskRepository.add(session, task)
+            await session.flush()
+
+            produced = await SqsProducerService.produce_unload_command(
+                work_id=order_id, sd_pos_id=order.printer_slot
+            )
+            if not produced:
+                await session.rollback()
+                logger.error("robot-commands unload1 명령 전송 실패 (work_id=%s)", order_id)
+                return False
+
+            await session.commit()
+            return True
+
+    @staticmethod
+    async def dispatch_pending_robot_work() -> None:
+        """로봇이 방금 자유로워졌을 때(success_load2/success_unload2 직후)나 타이머
+        스윕 뒤에 호출한다. LOAD1~LOAD2, UNLOAD1~UNLOAD2는 각각 한 세트로 묶여야
+        하므로, 로봇이 이미 다른 작업 중이면 아무것도 하지 않는다. 비어있으면 밀린
+        unload1(출력은 끝났지만 아직 못 꺼낸 주문)을 먼저 처리하고, 없으면 대기
+        중인(WAITING) 주문의 load1을 가장 오래된 것부터 디스패치한다 — 프린터를
+        먼저 비우는 쪽이 전체 처리량에 유리해서 unload를 우선한다."""
+        async with AsyncSessionLocal() as session:
+            busy = await RobotTaskRepository.get_active_real_robot_task_locked(session)
+            if busy is not None:
+                await session.rollback()
+                return
+
+            pending_unload = await OrderRepository.oldest_print_done_without_active_task(session)
+            pending_unload_id = pending_unload.id if pending_unload is not None else None
+
+            waiting_order_id = None
+            if pending_unload_id is None and not TeachingPendantService.is_session_active():
+                waiting_orders = await OrderRepository.get_waiting(session)
+                waiting_order_id = waiting_orders[0].id if waiting_orders else None
+
+            await session.rollback()
+
+        try:
+            if pending_unload_id is not None:
+                await WorkRequestService._try_dispatch_unload1(pending_unload_id)
+            elif waiting_order_id is not None:
+                await WorkRequestService._try_dispatch_load1(waiting_order_id)
+        except (BoardEmptyError, SqsProduceError):
+            logger.exception("dispatch_pending_robot_work 디스패치 실패")
 
     @staticmethod
     async def _insert_order(

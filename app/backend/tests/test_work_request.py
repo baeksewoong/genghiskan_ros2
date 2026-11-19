@@ -37,40 +37,92 @@ async def _fill_all_printers() -> None:
         await session.commit()
 
 
-async def test_board_empty_returns_error_but_keeps_order_waiting():
+async def test_board_empty_rejects_without_creating_order():
+    """베드가 없으면 작업요청 자체를 접수하지 않는다 — 주문도, robot_tasks도
+    생성되지 않는다."""
     async with AsyncSessionLocal() as session:
         with pytest.raises(BoardEmptyError):
             await WorkRequestService.create(session, shape=None)
 
     async with AsyncSessionLocal() as session:
-        order = (await session.execute(select(Order))).scalars().one()
-        assert order.status == OrderStatus.WAITING
+        orders = (await session.execute(select(Order))).scalars().all()
+        assert orders == []
 
         tasks = (await session.execute(select(RobotTask))).scalars().all()
         assert tasks == []
 
 
-async def test_dispatch_does_not_need_a_printer(monkeypatch):
-    """printer가 전부 차있어도 dispatch 자체는 영향받지 않는다 — 프린터는
-    success_load1 때 비로소 고른다."""
+async def test_board_empty_requests_never_dispatch_until_refill(monkeypatch):
+    """베드가 없는 동안 들어온 요청은 전부 거부되고 아무것도 남기지 않는다 —
+    "채우기 완료"를 눌러야 그 다음 요청부터 정상 접수·디스패치된다."""
+    sent: list[dict] = []
+
+    async def _fake_produce_load(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce_load)
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(BoardEmptyError):
+            await WorkRequestService.create(session, shape=None)
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(BoardEmptyError):
+            await WorkRequestService.create(session, shape=None)
+
+    assert sent == []  # 로봇에는 아무것도 나가지 않았다
+    async with AsyncSessionLocal() as session:
+        assert (await session.execute(select(Order))).scalars().all() == []
+
+    async with AsyncSessionLocal() as session:
+        await BoardStockService.refill_complete(session)
+
+    # 채우기 완료 이후의 요청은 평소처럼 즉시 디스패치된다.
+    async with AsyncSessionLocal() as session:
+        order = await WorkRequestService.create(session, shape=None)
+    assert order.status == OrderStatus.DISPATCHING
+    assert sent == [{"work_id": order.id, "start_pos_id": 3}]
+
+
+async def test_dispatch_blocked_when_no_empty_printer_to_avoid_deadlock(monkeypatch):
+    """프린터가 전부 차 있으면 load1 자체를 보내지 않는다 — 로봇이 베드를 집고도
+    놓을 곳이 없어 들고 멈춰버리면, 로봇이 하나뿐이라 그 사이엔 unload조차 보낼 수
+    없어 영구적으로 멈추기 때문이다. 프린터가 비면 밀린 load1이 자동으로 이어진다."""
     await _occupy(2)
     await _fill_all_printers()
-    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
+    sent: list[dict] = []
+
+    async def _fake_produce_load(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce_load)
 
     async with AsyncSessionLocal() as session:
         order = await WorkRequestService.create(session, shape=None)
-        assert order.status == OrderStatus.DISPATCHING
-        assert order.printer_slot is None
+        assert order.status == OrderStatus.WAITING
+
+    assert sent == []
 
     async with AsyncSessionLocal() as session:
         board = await session.get(BoardStock, 2)
-        assert board.status == BoardStockStatus.RESERVED
+        assert board.status == BoardStockStatus.OCCUPIED  # 예약되지 않음
 
-        task = (await session.execute(select(RobotTask))).scalars().one()
-        assert task.status == TaskStatus.DISPATCHED
-        assert task.start_pos_id == 2
-        assert task.sd_pos_id is None
-        assert task.printer_slot is None
+        tasks = (await session.execute(select(RobotTask))).scalars().all()
+        assert tasks == []
+
+    async with AsyncSessionLocal() as session:
+        printer = await session.get(Printer, 1)
+        printer.status = PrinterStatus.EMPTY
+        printer.current_order_id = None
+        await session.commit()
+
+    await WorkRequestService.dispatch_pending_robot_work()
+
+    assert sent == [{"work_id": order.id, "start_pos_id": 2}]
+    async with AsyncSessionLocal() as session:
+        refreshed = await session.get(Order, order.id)
+        assert refreshed.status == OrderStatus.DISPATCHING
 
 
 async def test_successful_dispatch_reserves_board_only(monkeypatch):
@@ -142,27 +194,6 @@ async def test_load_success_frees_board_and_dispatches_lowest_empty_printer(monk
         assert printer.current_order_id == order.id
 
 
-async def test_load_success_with_no_empty_printer_still_frees_board(monkeypatch):
-    """베드는 집었지만(물리적 사실) 둘 곳(빈 프린터)이 없는 경우 — board_stock/주문
-    상태 전이는 그대로 적용되고, 프린터 배정/배치 명령만 보류된다."""
-    await _occupy(2)
-    await _fill_all_printers()
-    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
-
-    async with AsyncSessionLocal() as session:
-        order = await WorkRequestService.create(session, shape=None)
-
-    await WorkRequestService.handle_load_success(order.id)
-
-    async with AsyncSessionLocal() as session:
-        refreshed = await session.get(Order, order.id)
-        assert refreshed.status == OrderStatus.LOADING
-        assert refreshed.printer_slot is None
-
-        board = await session.get(BoardStock, 2)
-        assert board.status == BoardStockStatus.EMPTY
-
-
 async def test_place_success_starts_printing_with_timer(monkeypatch):
     await _occupy(2)
     monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce(True))
@@ -213,9 +244,49 @@ async def test_load_pick_failed_broadcasts_alert_without_changing_state(monkeypa
         assert board.status == BoardStockStatus.RESERVED  # 그대로
 
 
-async def test_retry_load_resends_hardcoded_start_pos_id(monkeypatch):
-    """load1 SQS 발행은 현재 실제 적재대 슬롯과 무관하게 3으로 하드코딩돼 있다
-    (테스트용 임시 조치) — 재시도도 동일하게 3으로 다시 보내야 한다."""
+async def test_create_defers_load_when_robot_busy_with_another_order(monkeypatch):
+    """로봇이 이미 다른 주문의 LOAD1~LOAD2 사이에 있으면, 새 작업요청은 load1을
+    보내지 않고 WAITING으로 남는다 — 로봇이 비면(LOAD2 성공) 자동으로 이어서
+    디스패치된다."""
+    await _occupy(1)
+    await _occupy(2)
+    sent: list[dict] = []
+
+    async def _fake_produce_load(*, work_id, start_pos_id, retry_token=None):
+        sent.append({"work_id": work_id, "start_pos_id": start_pos_id})
+        return True
+
+    monkeypatch.setattr(SqsProducerService, "produce_load_command", _fake_produce_load)
+    monkeypatch.setattr(SqsProducerService, "produce_place_command", _fake_produce(True))
+
+    async with AsyncSessionLocal() as session:
+        first = await WorkRequestService.create(session, shape=None)
+    assert first.status == OrderStatus.DISPATCHING
+    assert sent == [{"work_id": first.id, "start_pos_id": 2}]
+
+    async with AsyncSessionLocal() as session:
+        second = await WorkRequestService.create(session, shape=None)
+
+    # 로봇이 아직 첫 주문의 LOAD1~LOAD2 사이라 두 번째는 보류된다 — load1이 추가로
+    # 나가지 않고, 적재대도 건드리지 않는다.
+    assert second.status == OrderStatus.WAITING
+    assert sent == [{"work_id": first.id, "start_pos_id": 2}]
+    async with AsyncSessionLocal() as session:
+        board1 = await session.get(BoardStock, 1)
+        assert board1.status == BoardStockStatus.OCCUPIED  # 예약되지 않음
+
+    # 첫 주문이 LOAD1~LOAD2를 마쳐 로봇이 비면, 밀려 있던 두 번째 주문이 자동으로 이어진다.
+    await WorkRequestService.handle_load_success(first.id)
+    await WorkRequestService.handle_place_success(first.id)
+
+    assert sent[-1] == {"work_id": second.id, "start_pos_id": 1}
+    async with AsyncSessionLocal() as session:
+        refreshed_second = await session.get(Order, second.id)
+        assert refreshed_second.status == OrderStatus.DISPATCHING
+
+
+async def test_retry_load_resends_same_start_pos_id(monkeypatch):
+    """재시도도 최초 dispatch 때와 같은 start_pos_id(집었던 적재대 슬롯)로 다시 보내야 한다."""
     await _occupy(2)
     sent: list[dict] = []
     tokens: list = []
@@ -232,7 +303,7 @@ async def test_retry_load_resends_hardcoded_start_pos_id(monkeypatch):
 
     await WorkRequestService.retry_load(order.id)
 
-    assert sent[-1] == {"work_id": order.id, "start_pos_id": 3}
+    assert sent[-1] == {"work_id": order.id, "start_pos_id": 2}
     assert tokens[0] is None  # 첫 디스패치
     assert tokens[-1]  # 재시도는 FIFO 중복 제거에 걸리지 않게 토큰을 붙여야 한다
 
@@ -435,6 +506,10 @@ async def test_pickup_without_waiting_order_sends_nothing(monkeypatch):
 
 async def test_retry_unload1_resends_with_retry_token(monkeypatch):
     work_id = await _make_print_done_order(monkeypatch)
+    async with AsyncSessionLocal() as session:
+        db_order = await session.get(Order, work_id)
+        db_order.printer_slot = 1
+        await session.commit()
     sent: list[dict] = []
 
     async def _fake_unload1(*, work_id, sd_pos_id, retry_token=None):

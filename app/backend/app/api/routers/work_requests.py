@@ -28,7 +28,6 @@ async def create_work_request(
             detail={
                 "error_code": "BOARD_EMPTY",
                 "message": "적재대에 베드가 비어있습니다",
-                "order_id": exc.order_id,
             },
         ) from exc
     except SqsProduceError as exc:
