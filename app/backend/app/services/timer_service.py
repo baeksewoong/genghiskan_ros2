@@ -34,8 +34,8 @@ class TimerService:
                 printer.mark_done(now)
 
                 # 출력이 끝나면 robot-commands에 unload1(프린터에서 완성품 꺼내기)을 보낸다.
-                # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
-                await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=3)
+                # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 1로 하드코딩해 발행 중 — 테스트용 임시 조치.
+                await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=1)
 
                 await broadcast_to_web(
                     session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")

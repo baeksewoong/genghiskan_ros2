@@ -445,7 +445,7 @@ async def test_retry_unload1_resends_with_retry_token(monkeypatch):
 
     await WorkRequestService.retry_unload1(work_id)
 
-    assert sent[0]["work_id"] == work_id and sent[0]["sd_pos_id"] == 3
+    assert sent[0]["work_id"] == work_id and sent[0]["sd_pos_id"] == 1
     assert sent[0]["retry_token"]
 
 
