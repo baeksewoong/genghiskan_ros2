@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sfarm_joint_streamer</name>
+  <version>0.0.0</version>
+  <description>
+    로봇 팔(두산 M0609) 실시간 조인트 각도를 /joint_states에서 구독해 백엔드
+    WebSocket(/ws/robot-state)으로 스트리밍하는 노드. 티칭팬던트 3D 뷰어가 이 값을
+    받아 실제 로봇 자세를 실시간으로 반영한다. sfarm_bridge/sfarm_robot/
+    sfarm_interfaces가 publish하는 토픽을 구독만 하며 그 패키지들은 수정하지 않는다.
+  </description>
+  <maintainer email="ysn08172@gmail.com">rokey</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <!-- pip 패키지 websocket-client (import name: websocket).
+       rosdep 키가 이 환경에서 해석되지 않으면: pip install websocket-client -->
+  <exec_depend>python3-websocket-client</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
