@@ -8,6 +8,7 @@ import type {
   JogRefFrame,
   JogSpace,
   Order,
+  OrderStatus,
   Shape,
   SqsStatus,
   StateSnapshot,
@@ -75,6 +76,15 @@ async function retryUnload(workId: number): Promise<void> {
   }
 }
 
+async function confirmPlace(workId: number): Promise<void> {
+  const res = await fetch(`/api/work-requests/${workId}/confirm-place`, { method: "POST" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = body?.detail as { error_code?: string; message?: string } | undefined;
+    throw new WorkRequestError(detail?.message ?? `배치 확인 실패: ${res.status}`, detail?.error_code);
+  }
+}
+
 async function pickUpOrder(orderId: number): Promise<Order> {
   return request<Order>(`/api/orders/${orderId}/pickup`, { method: "POST" });
 }
@@ -133,6 +143,15 @@ export const api = {
   // 작업요청(SQS) 경로 전용 (PRD: assets/docs/prd-work-request-sqs.md).
   createWorkRequest,
 
+  // 작업 히스토리 페이지 전용: 전체 주문 목록(서버가 created_at 내림차순으로 반환).
+  getOrders: (params?: { status?: OrderStatus; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.set("status", params.status);
+    if (params?.limit) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return request<Order[]>(`/api/orders${qs ? `?${qs}` : ""}`);
+  },
+
   getBoardStock: () => request<BoardStockSlot[]>("/api/board-stock"),
   getReceivePos: () => request<ReceivePos[]>("/api/receive-pos"),
 
@@ -149,6 +168,9 @@ export const api = {
   // 베드 집기 실패 알럿("확인") 전용: 같은 work_id로 LOAD 명령을 SQS에 재전송한다.
   retryLoad,
   retryUnload,
+
+  // 프린터 배치 실패 알럿("네") 전용: 로봇 대신 success_load2를 robot-events에 주입한다.
+  confirmPlace,
 
   // 수령대 "수령하기" 버튼 전용: 눌렀을 때만 주문을 수령대에서 내린다.
   pickUpOrder,

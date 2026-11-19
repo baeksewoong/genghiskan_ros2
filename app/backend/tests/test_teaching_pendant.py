@@ -5,8 +5,8 @@ from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
 from app.core.runtime import runtime
-from app.enums import BoardStockStatus, OrderStatus
-from app.models import BoardStock, RobotTask
+from app.enums import BoardStockStatus, OrderStatus, Shape
+from app.models import BoardStock, Order, RobotTask, User
 from app.services.sqs_producer_service import SqsProducerService
 from app.services.teaching_pendant_service import (
     GripperProduceError,
@@ -48,6 +48,45 @@ async def test_enable_rejected_when_real_robot_task_active(monkeypatch):
 
     async with AsyncSessionLocal() as session:
         await WorkRequestService.create(session, shape=None)
+
+    with pytest.raises(RobotBusyError):
+        await TeachingPendantService.enable_session()
+
+    assert runtime.teaching_pendant.enabled is False
+
+
+async def test_enable_rejected_when_real_robot_task_active_for_unload(monkeypatch):
+    """unload1~unload2 사이(로봇이 완성품을 들고 있는 동안)에도 조그 세션 활성화를
+    거부해야 한다 — robot_tasks에 UNLOAD 작업 행이 남아 있어야 가능하다."""
+    sent: list[dict] = []
+
+    async def _fake_produce_unload(*, work_id, sd_pos_id):
+        sent.append({"work_id": work_id, "sd_pos_id": sd_pos_id})
+        return True
+
+    monkeypatch.setattr(SqsProducerService, "produce_unload_command", _fake_produce_unload)
+
+    now = datetime.utcnow()
+    async with AsyncSessionLocal() as session:
+        user = User(name="tester", created_at=now)
+        session.add(user)
+        await session.flush()
+        order = Order(
+            user_id=user.id,
+            shape=Shape.TRIANGLE,
+            print_duration_sec=30,
+            status=OrderStatus.PRINT_DONE,
+            printer_slot=1,
+            created_at=now,
+            print_completed_at=now,
+            updated_at=now,
+        )
+        session.add(order)
+        await session.commit()
+        order_id = order.id
+
+    assert await WorkRequestService._try_dispatch_unload1(order_id) is True
+    assert sent == [{"work_id": order_id, "sd_pos_id": 1}]
 
     with pytest.raises(RobotBusyError):
         await TeachingPendantService.enable_session()

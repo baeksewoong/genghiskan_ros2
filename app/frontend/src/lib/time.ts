@@ -5,3 +5,17 @@ export function parseServerTime(iso: string): number {
   const hasTimezone = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
   return new Date(hasTimezone ? iso : `${iso}Z`).getTime();
 }
+
+// 작업 히스토리 페이지 전용: 서버 타임스탬프를 사람이 읽을 수 있는 로컬 날짜/시각
+// 문자열로 바꾼다. null/undefined(아직 발생하지 않은 이벤트)는 "-"로 표시한다.
+export function formatServerTime(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  return new Date(parseServerTime(iso)).toLocaleString("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}

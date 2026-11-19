@@ -409,8 +409,8 @@ def main(args=None) -> None:
     # DSR_ROBOT2는 내부에서 이 노드로 spin_until_future_complete를 하므로
     # executor에 넣지 않는 별도 노드로 둔다.
     dsr_node = rclpy.create_node('sfarm_robot_dsr', namespace=ROBOT_ID)
-    stop_node = rclpy.create_node('sfarm_robot_stop', namespace=ROBOT_ID)
     DR_init.__dsr__node = dsr_node
+    stop_node = rclpy.create_node('sfarm_robot_stop', namespace=ROBOT_ID)
     try:
         # motions.py는 맨 위에서 DSR_ROBOT2를 import 하므로 DR_init 설정이 끝난 지금 import 한다.
 
@@ -425,12 +425,8 @@ def main(args=None) -> None:
             run_unload1,
             run_unload2,
         )
-        # stop(DR_SSTOP)은 motions.py의 run_*()를 거치지 않고 /sfarm/jog/stop
-        # 서비스가 직접 호출한다 (PRD 5.3) - busy_lock을 안 잡은 상태에서 호출돼야
-        # 하므로 여기서 콜러블로만 주입한다. DSR_ROBOT2는 DR_init 설정이 끝난 지금만
-        # import 가능하다.
         # DSR_ROBOT2.py에는 DRL의 stop()에 대응하는 Python wrapper가 없어
-        # motion/move_stop 서비스를 직접 호출한다.
+        # motion/move_stop 서비스를 직접 호출한다 (PRD 5.3).
         # run_jog()가 dsr_node를 spin하는 동안에도 /sfarm/jog/stop이 충돌 없이
         # 서비스를 호출할 수 있도록 전용 stop_node와 락을 사용한다.
         import DSR_ROBOT2

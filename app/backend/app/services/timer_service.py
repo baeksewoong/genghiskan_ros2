@@ -9,13 +9,19 @@ from app.repositories.order_repository import OrderRepository
 from app.repositories.printer_repository import PrinterRepository
 from app.services.order_presenter import build_order_out
 from app.services.printer_presenter import build_printer_out
-from app.services.sqs_producer_service import SqsProducerService
+from app.services.work_request_service import WorkRequestService
 
 logger = logging.getLogger(__name__)
 
 
 class TimerService:
-    """출력 타이머를 주기적으로 점검해, 끝난 출력은 PRINT_DONE으로 바꾸고 unload1을 보낸다.
+    """출력 타이머를 주기적으로 점검해, 끝난 출력은 PRINT_DONE으로 바꾼다.
+
+    unload1은 여기서 바로 보내지 않는다 — LOAD1~LOAD2, UNLOAD1~UNLOAD2는 각각
+    한 세트로 묶여야 해서, 로봇이 다른 작업 중이면 끼어들면 안 되기 때문이다
+    (work_request_service.WorkRequestService.dispatch_pending_robot_work가
+    로봇 점유 여부를 확인해 unload1을 보내거나, 바쁘면 보류한다). 매 틱마다
+    그 함수를 호출해 두 번 다 밀린 작업이 자연히 이어지게 한다.
 
     DB의 timer_ends_at을 매 틱마다 그대로 읽어 판정하므로, 서버가 재시작돼도
     별도 복원 로직 없이 자연히 복구된다."""
@@ -33,10 +39,6 @@ class TimerService:
                 order.mark_print_done(now)
                 printer.mark_done(now)
 
-                # 출력이 끝나면 robot-commands에 unload1(프린터에서 완성품 꺼내기)을 보낸다.
-                # TODO: 실제 프린터 슬롯(printer.slot)이 아니라 3으로 하드코딩해 발행 중 — 테스트용 임시 조치.
-                await SqsProducerService.produce_unload_command(work_id=order.id, sd_pos_id=3)
-
                 await broadcast_to_web(
                     session, "order.updated", (await build_order_out(session, order)).model_dump(mode="json")
                 )
@@ -53,6 +55,9 @@ class TimerService:
             await asyncio.sleep(settings.timer_sweep_interval_sec)
             try:
                 await TimerService._sweep_print_timers()
+                # 방금 PRINT_DONE된 주문이 있든 없든, 로봇이 비어 있다면 밀린
+                # unload1/load1을 이어서 시도한다.
+                await WorkRequestService.dispatch_pending_robot_work()
             except Exception:
                 # 한 사이클의 오류가 스윕 루프 전체를 멈추지 않도록 한다.
                 logger.exception("timer sweep cycle failed")
