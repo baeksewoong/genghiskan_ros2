@@ -303,9 +303,15 @@ def run_steps(motions, start: int = 1, end: int | None = None) -> None:
                 leave_layer(motions, at_layer)  # 층에서 층으로 바로 가지 않고 진입전2를 거침
             enter_layer(motions, target)
             at_layer = target
-            if try_grab(target) and extract_after_grab(motions, target):
+            if not try_grab(target):
+                # 못 잡음: 원위치로 돌아와 그리퍼 열림 -> 왔던 길을 거꾸로 홈까지 복귀
+                motions.unload_retreat_home(target, log=print)
+                at_layer = None
+                i = 1   # 로봇은 nums[0](홈)에 있음 -> 다음 목표 nums[1]
+                continue
+            if extract_after_grab(motions, target):
                 return   # 잡기 성공 -> 베드 빼내기까지 완료 (잡은 채로 마지막 좌표에 있음)
-            # 못 잡음: 원위치로 돌아와 그리퍼 열림 상태. at_layer는 그 층 그대로 (c = 다시 시도, b = 진입전2로)
+            # 이어갈 좌표가 없거나 q로 멈춤: 그 층에 그대로 (c = 다시 잡기, b = 진입전2로)
             continue
         print(f'  입력 오류: {opts} 중 하나, b, c, g, r, q')
 
