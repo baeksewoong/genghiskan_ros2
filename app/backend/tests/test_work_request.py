@@ -504,6 +504,123 @@ async def test_pickup_without_waiting_order_sends_nothing(monkeypatch):
     assert sent == []
 
 
+def _capture_unload1(monkeypatch, result: bool = True) -> list[dict]:
+    sent: list[dict] = []
+
+    async def _fake_unload1(*, work_id, sd_pos_id, retry_token=None):
+        sent.append({"work_id": work_id, "sd_pos_id": sd_pos_id})
+        return result
+
+    monkeypatch.setattr(SqsProducerService, "produce_unload_command", _fake_unload1)
+    return sent
+
+
+async def _free_robot_tasks(order_id: int) -> None:
+    """_make_print_done_order가 생성 과정에서 남긴 load1 robot_task(DISPATCHED)를
+    SUCCEEDED로 바꿔 로봇을 "빈" 상태로 되돌린다 — _try_dispatch_unload1/
+    dispatch_pending_robot_work의 로봇 바쁨 체크는 주문과 무관하게 활성 task
+    전체를 보기 때문에, 이 테스트들처럼 로봇이 비어있다고 가정하는 시나리오에선
+    먼저 정리해 둬야 한다."""
+    async with AsyncSessionLocal() as session:
+        tasks = (await session.execute(select(RobotTask).where(RobotTask.order_id == order_id))).scalars().all()
+        for task in tasks:
+            task.status = TaskStatus.SUCCEEDED
+        await session.commit()
+
+
+async def test_try_dispatch_unload1_blocked_when_receive_pos_full(monkeypatch):
+    """수령대(1, 2)가 모두 차 있으면 unload1조차 보내지 않는다 — 로봇이 완성품을
+    집고 나서 내려놓을 곳이 없어 멈추는 상태를 막기 위함(PRD: 빈 프린터 선점과
+    같은 이유)."""
+    for pos in (1, 2):
+        other_id = await _make_print_done_order(monkeypatch)
+        await _set_order(other_id, OrderStatus.READY_FOR_PICKUP, pos)
+        await _free_robot_tasks(other_id)
+    work_id = await _make_print_done_order(monkeypatch)
+    await _free_robot_tasks(work_id)
+    async with AsyncSessionLocal() as session:
+        order = await session.get(Order, work_id)
+        order.printer_slot = 3
+        await session.commit()
+
+    sent = _capture_unload1(monkeypatch)
+    events = _capture_broadcasts(monkeypatch)
+
+    assert await WorkRequestService._try_dispatch_unload1(work_id) is False
+    assert sent == []
+    assert ("alert.receive_pos_full", {"work_id": work_id, "reason": "RECEIVE_POS_FULL"}) in events
+
+    async with AsyncSessionLocal() as session:
+        order = await session.get(Order, work_id)
+        assert order.status == OrderStatus.PRINT_DONE  # unload1을 보내지 않아 그대로
+        tasks = (
+            await session.execute(
+                select(RobotTask).where(RobotTask.order_id == work_id, RobotTask.status == TaskStatus.DISPATCHED)
+            )
+        ).scalars().all()
+        assert tasks == []  # 새 unload1 robot_task는 만들어지지 않는다
+
+
+async def test_try_dispatch_unload1_does_not_repeat_alert_while_still_full(monkeypatch):
+    """타이머 스윕이 0.5초마다 _try_dispatch_unload1을 다시 호출해도(PRD:
+    수령대 선점), 조건이 안 풀렸으면 alert.receive_pos_full을 work_id당 한 번만
+    보낸다 — 아니면 사람이 "확인"으로 모달을 닫자마자 다음 스윕 틱에 바로 다시
+    뜬다."""
+    for pos in (1, 2):
+        other_id = await _make_print_done_order(monkeypatch)
+        await _set_order(other_id, OrderStatus.READY_FOR_PICKUP, pos)
+        await _free_robot_tasks(other_id)
+    work_id = await _make_print_done_order(monkeypatch)
+    await _free_robot_tasks(work_id)
+    async with AsyncSessionLocal() as session:
+        order = await session.get(Order, work_id)
+        order.printer_slot = 3
+        await session.commit()
+
+    sent = _capture_unload1(monkeypatch)
+    events = _capture_broadcasts(monkeypatch)
+
+    for _ in range(3):  # 스윕 세 틱을 흉내낸다
+        assert await WorkRequestService._try_dispatch_unload1(work_id) is False
+    assert sent == []
+
+    full_alerts = [e for e in events if e[0] == "alert.receive_pos_full"]
+    assert full_alerts == [("alert.receive_pos_full", {"work_id": work_id, "reason": "RECEIVE_POS_FULL"})]
+
+
+async def test_pickup_resumes_unload1_blocked_by_full_receive_pos(monkeypatch):
+    """수령대 가득 참으로 unload1이 보류된 뒤, 사람이 "수령하기"로 자리를 비우면
+    자동으로 unload1이 디스패치된다."""
+    occupant_ids = []
+    for pos in (1, 2):
+        other_id = await _make_print_done_order(monkeypatch)
+        await _set_order(other_id, OrderStatus.READY_FOR_PICKUP, pos)
+        await _free_robot_tasks(other_id)
+        occupant_ids.append(other_id)
+    work_id = await _make_print_done_order(monkeypatch)
+    await _free_robot_tasks(work_id)
+    async with AsyncSessionLocal() as session:
+        order = await session.get(Order, work_id)
+        order.printer_slot = 3
+        await session.commit()
+
+    sent = _capture_unload1(monkeypatch)
+    assert await WorkRequestService._try_dispatch_unload1(work_id) is False
+    assert sent == []
+
+    async with AsyncSessionLocal() as session:
+        await OrderService.pick_up(session, occupant_ids[0])  # 1번 수령대 비움
+
+    assert sent == [{"work_id": work_id, "sd_pos_id": 3}]
+    async with AsyncSessionLocal() as session:
+        tasks = (
+            await session.execute(
+                select(RobotTask).where(RobotTask.order_id == work_id, RobotTask.status == TaskStatus.DISPATCHED)
+            )
+        ).scalars().all()
+        assert len(tasks) == 1
+
+
 async def test_retry_unload1_resends_with_retry_token(monkeypatch):
     work_id = await _make_print_done_order(monkeypatch)
     async with AsyncSessionLocal() as session:

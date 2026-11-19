@@ -29,5 +29,6 @@ async def _fresh_database():
     # 티칭 팬던트 조그 세션은 테스트마다 항상 비활성으로 시작한다 (PRD:
     # prd-teaching-pendant.md 5장 — 서버 재시작 시 복원하지 않는 설계와 동일하게).
     runtime.teaching_pendant = TeachingPendantSession()
+    runtime.receive_pos_full_alerted_work_ids.clear()
 
     yield

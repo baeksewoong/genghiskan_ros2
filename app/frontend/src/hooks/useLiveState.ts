@@ -33,6 +33,11 @@ export interface UnloadPickFailedAlert {
   work_id: number;
 }
 
+export interface PlaceFailedAlert {
+  // robot-events의 프린터 배치 실패 이벤트({"work_id":1,"type":"fail_load2"}) 수신 시.
+  work_id: number;
+}
+
 export interface ReceivePosFullAlert {
   // success_unload1 후 수령대(1, 2)가 모두 차 있어 unload2가 대기 중일 때.
   work_id: number;
@@ -123,6 +128,8 @@ export function summarize(type: string, data: Record<string, unknown>): string {
       return `알럿: 베드 집기 실패 (work_id=${data.work_id})`;
     case "alert.unload_pick_failed":
       return `알럿: 완성품 집기 실패 (work_id=${data.work_id})`;
+    case "alert.place_failed":
+      return `알럿: 프린터 배치 실패 (work_id=${data.work_id})`;
     case "alert.receive_pos_full":
       return `알럿: 수령대 가득 참 (work_id=${data.work_id})`;
     case "alert.receive_pos_full_cleared":
@@ -148,6 +155,7 @@ export function useLiveState() {
   const [alert, setAlert] = useState<RefillAlert | null>(null);
   const [loadFailedAlert, setLoadFailedAlert] = useState<LoadPickFailedAlert | null>(null);
   const [unloadFailedAlert, setUnloadFailedAlert] = useState<UnloadPickFailedAlert | null>(null);
+  const [placeFailedAlert, setPlaceFailedAlert] = useState<PlaceFailedAlert | null>(null);
   const [receivePosFullAlert, setReceivePosFullAlert] = useState<ReceivePosFullAlert | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   // SQS 모니터링 페이지 전용: 다른 이벤트에 밀려 log(50개 캡)에서
@@ -220,6 +228,8 @@ export function useLiveState() {
           setLoadFailedAlert({ work_id: (envelope.data as any).work_id });
         } else if (envelope.type === "alert.unload_pick_failed") {
           setUnloadFailedAlert({ work_id: (envelope.data as any).work_id });
+        } else if (envelope.type === "alert.place_failed") {
+          setPlaceFailedAlert({ work_id: (envelope.data as any).work_id });
         } else if (envelope.type === "alert.receive_pos_full") {
           setReceivePosFullAlert({ work_id: (envelope.data as any).work_id });
         } else if (envelope.type === "alert.receive_pos_full_cleared") {
@@ -360,12 +370,14 @@ export function useLiveState() {
     alert,
     loadFailedAlert,
     unloadFailedAlert,
+    placeFailedAlert,
     receivePosFullAlert,
     log,
     sqsLog,
     setAlert,
     setLoadFailedAlert,
     setUnloadFailedAlert,
+    setPlaceFailedAlert,
     setReceivePosFullAlert,
     boardStock,
     receivePos,

@@ -51,5 +51,11 @@ class RuntimeState:
     teaching_pendant: TeachingPendantSession = field(default_factory=TeachingPendantSession)
     teaching_pendant_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    # alert.receive_pos_full을 이미 보낸 work_id 집합 — 타이머 스윕(0.5초 간격)이
+    # 수령대가 비기 전까지 매 틱마다 같은 조건을 다시 발견해도, 한 번 알린 work_id는
+    # alert.receive_pos_full_cleared가 날 때까지 다시 보내지 않기 위한 용도다.
+    # 재시작되면 비워져도 무방하다 — 조건이 여전하면 다음 스윕에서 한 번 더 알리면 된다.
+    receive_pos_full_alerted_work_ids: set[int] = field(default_factory=set)
+
 
 runtime = RuntimeState()

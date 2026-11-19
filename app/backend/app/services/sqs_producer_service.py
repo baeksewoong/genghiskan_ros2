@@ -143,6 +143,34 @@ class SqsProducerService:
         )
 
     @staticmethod
+    async def produce_manual_robot_event(body: dict, log_extra: dict) -> bool:
+        """사람이 눈으로 확인하고 로봇 대신 robot-events에 이벤트를 주입할 때 쓴다
+        (예: fail_load2 알럿에서 "네"를 눌러 success_load2를 대신 보냄 — PRD:
+        assets/docs/prd-work-request-sqs.md 5장). robot-events는 표준(비FIFO) 큐라
+        MessageGroupId/MessageDeduplicationId가 필요 없다."""
+        if not settings.event_queue_url:
+            await _broadcast_sqs_event(
+                "sqs.event_send_skipped", {**log_extra, "reason": "EVENT_QUEUE_URL 미설정"}
+            )
+            return False
+
+        try:
+            response = await asyncio.to_thread(
+                _client().send_message,
+                QueueUrl=settings.event_queue_url,
+                MessageBody=json.dumps(body, ensure_ascii=False),
+            )
+            await _broadcast_sqs_event(
+                "sqs.event_sent",
+                {**log_extra, "body": body, "message_id": response.get("MessageId"), "queue": "robot-events"},
+            )
+            return True
+        except (BotoCoreError, ClientError) as exc:
+            logger.error("robot-events 수동 발행 실패 (%s): %s", log_extra, exc)
+            await _broadcast_sqs_event("sqs.event_send_failed", {**log_extra, "body": body, "error": str(exc)})
+            return False
+
+    @staticmethod
     async def _send(work_id: int, body: dict, dedup_prefix: str, retry_token: str | None = None) -> bool:
         """LOAD/UNLOAD(work_id 기반) 전용 얇은 래퍼. 성공하면 True, 큐 미설정이거나
         전송에 실패하면 False를 반환한다 (호출 측이 트랜잭션을 롤백한다).
