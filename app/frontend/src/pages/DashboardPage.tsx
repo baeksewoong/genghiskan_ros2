@@ -8,6 +8,7 @@ import { UnloadPickFailedModal } from "../components/organisms/UnloadPickFailedM
 import { ReceivePosFullModal } from "../components/organisms/ReceivePosFullModal";
 import { ReceivePosPanel } from "../components/organisms/ReceivePosPanel";
 import { PrinterPanel } from "../components/organisms/PrinterPanel";
+import { OrderQueuePanel } from "../components/organisms/OrderQueuePanel";
 import { useLiveState } from "../hooks/useLiveState";
 import { api, WorkRequestError } from "../lib/api";
 import type { Shape } from "../types";
@@ -86,6 +87,14 @@ export function DashboardPage() {
       boardStock={<BoardStockPanel slots={boardStock} />}
       printers={<PrinterPanel printers={snapshot?.printers ?? null} />}
       receivePos={<ReceivePosPanel positions={receivePos} orders={receiveOrders} onPickUp={handlePickUp} />}
+      waitingQueue={
+        <OrderQueuePanel
+          icon="🕒"
+          title="작업 대기 중"
+          orders={snapshot?.waiting_orders ?? []}
+          emptyLabel="대기 중인 주문이 없습니다."
+        />
+      }
       modal={
         <>
           <BoardStockRefillModal alert={alert} onConfirm={handleBoardStockRefillComplete} />

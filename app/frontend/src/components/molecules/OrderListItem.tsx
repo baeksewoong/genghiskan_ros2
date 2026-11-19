@@ -3,14 +3,15 @@ import type { Order } from "../../types";
 
 interface OrderListItemProps {
   order: Order;
-  showStatus?: boolean;
 }
 
-export function OrderListItem({ order, showStatus = false }: OrderListItemProps) {
+export function OrderListItem({ order }: OrderListItemProps) {
   return (
     <li>
-      #{order.id} {SHAPE_LABEL[order.shape]}
-      {showStatus ? ` · ${order.status}` : ""}
+      <span className="receive-pos-info">
+        <span className="pickup-customer-name">{order.customer_name ?? `주문 #${order.id}`}</span>
+        <span className="pickup-shape">{SHAPE_LABEL[order.shape]}</span>
+      </span>
     </li>
   );
 }
