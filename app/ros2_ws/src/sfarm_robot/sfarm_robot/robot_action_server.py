@@ -409,6 +409,7 @@ def main(args=None) -> None:
     # DSR_ROBOT2는 내부에서 이 노드로 spin_until_future_complete를 하므로
     # executor에 넣지 않는 별도 노드로 둔다.
     dsr_node = rclpy.create_node('sfarm_robot_dsr', namespace=ROBOT_ID)
+    stop_node = rclpy.create_node('sfarm_robot_stop', namespace=ROBOT_ID)
     DR_init.__dsr__node = dsr_node
     try:
         # motions.py는 맨 위에서 DSR_ROBOT2를 import 하므로 DR_init 설정이 끝난 지금 import 한다.
@@ -428,12 +429,36 @@ def main(args=None) -> None:
         # 서비스가 직접 호출한다 (PRD 5.3) - busy_lock을 안 잡은 상태에서 호출돼야
         # 하므로 여기서 콜러블로만 주입한다. DSR_ROBOT2는 DR_init 설정이 끝난 지금만
         # import 가능하다.
-        from DSR_ROBOT2 import DR_SSTOP, stop as dsr_stop
+        # DSR_ROBOT2.py에는 DRL의 stop()에 대응하는 Python wrapper가 없어
+        # motion/move_stop 서비스를 직접 호출한다.
+        # run_jog()가 dsr_node를 spin하는 동안에도 /sfarm/jog/stop이 충돌 없이
+        # 서비스를 호출할 수 있도록 전용 stop_node와 락을 사용한다.
+        import DSR_ROBOT2
+        from DSR_ROBOT2 import DR_SSTOP
+        from dsr_msgs2.srv import MoveStop
+
+        srv_prefix = getattr(DSR_ROBOT2, '_srv_name_prefix', 'dsr_controller2/')
+        move_stop_client = stop_node.create_client(
+            MoveStop, f'{srv_prefix}motion/move_stop'
+        )
+        stop_lock = threading.Lock()
 
         def stop_motion() -> None:
-            dsr_stop(DR_SSTOP)
+            with stop_lock:
+                if not move_stop_client.wait_for_service(timeout_sec=1.0):
+                    raise RuntimeError('motion/move_stop 서비스에 연결할 수 없음')
+                req = MoveStop.Request()
+                req.stop_mode = DR_SSTOP
+                future = move_stop_client.call_async(req)
+                rclpy.spin_until_future_complete(stop_node, future, timeout_sec=3.0)
+                if not future.done():
+                    raise TimeoutError('motion/move_stop 서비스 응답 타임아웃')
+                res = future.result()
+                if res is None or not res.success:
+                    raise RuntimeError(f'motion/move_stop 호출 실패: {res}')
     except ImportError as e:
         dsr_node.get_logger().error(f'Error importing DSR_ROBOT2 / motions: {e}')
+        stop_node.destroy_node()
         dsr_node.destroy_node()
         rclpy.shutdown()
         return
@@ -459,6 +484,7 @@ def main(args=None) -> None:
     finally:
         executor.shutdown()
         node.destroy_node()
+        stop_node.destroy_node()
         dsr_node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
