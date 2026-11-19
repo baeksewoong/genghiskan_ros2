@@ -1026,12 +1026,14 @@ def run_load2(goal: Load2.Goal, log=print) -> bool:
 
 
 def unload_move_step(n: int, log=print, linear: bool = False) -> None:
-    """UNLOAD_J[n] 좌표로 이동. linear=True면 movel(직선), 아니면 movej(관절)."""
+    """UNLOAD_J[n] 좌표로 이동. linear=True면 movel(직선), 아니면 movej(관절).
+    속도/가속도 비율은 unload_poses.UNLOAD_STEP_SPEED[n] (없으면 1.0 / 1.0)."""
     table = unload_poses.UNLOAD_J
     if n not in table:
         raise ValueError(f'{n}번 좌표 없음 (가능: {sorted(table)})')
     name, j = table[n]
-    unload_move_j(f'[{n}] {name}', j, log=log, linear=linear)
+    vs, as_ = getattr(unload_poses, 'UNLOAD_STEP_SPEED', {}).get(n, (1.0, 1.0))
+    unload_move_j(f'[{n}] {name}', j, log=log, linear=linear, vel_scale=vs, acc_scale=as_)
 
 
 def unload_move_j(name: str, j, log=print, linear: bool | None = None,
