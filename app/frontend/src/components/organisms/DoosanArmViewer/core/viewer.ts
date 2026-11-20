@@ -18,6 +18,7 @@ import {
   resolveHomePoseRad,
 } from "./math";
 import { M0609RobotRig } from "./robot_rig";
+import { SceneStations } from "./stations";
 import { JointStateBuffer } from "./state_buffer";
 
 const CAMERA_PRESETS: Record<CameraPreset, { pos: [number, number, number]; target: [number, number, number] }> = {
@@ -35,6 +36,7 @@ export class DoosanM0609SceneViewer implements ViewerInstance {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly controls: OrbitControls;
   private readonly grid: THREE.GridHelper;
+  private readonly stations: SceneStations;
   private readonly rig: M0609RobotRig;
   private readonly stateBuffer: JointStateBuffer;
   private readonly resizeObserver: ResizeObserver | null;
@@ -90,6 +92,10 @@ export class DoosanM0609SceneViewer implements ViewerInstance {
     this.grid = new THREE.GridHelper(2.4, 24, 0x334155, 0x1e293b);
     this.grid.visible = options.showGrid ?? true;
     this.scene.add(this.grid);
+
+    this.stations = new SceneStations();
+    this.stations.setVisible(options.showStations ?? true);
+    this.scene.add(this.stations.group);
 
     this.rig = new M0609RobotRig({
       clampToLimits: options.clampToLimits ?? true,
@@ -201,6 +207,10 @@ export class DoosanM0609SceneViewer implements ViewerInstance {
 
   setShowGrid(visible: boolean): void {
     this.grid.visible = visible;
+  }
+
+  setShowStations(visible: boolean): void {
+    this.stations.setVisible(visible);
   }
 
   setShowAxes(visible: boolean): void {
@@ -332,6 +342,7 @@ export class DoosanM0609SceneViewer implements ViewerInstance {
     this.rig.dispose();
     this.grid.geometry.dispose();
     (this.grid.material as THREE.Material).dispose();
+    this.stations.dispose();
     this.stateBuffer.clear();
     this.renderer.dispose();
     this.renderer.domElement.remove();

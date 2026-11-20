@@ -41,6 +41,8 @@ export interface DoosanM0609ViewerProps {
   connectionStatus?: ConnectionStatus;
   backgroundColor?: string;
   showGrid?: boolean;
+  /** Show the loading-rack (적재대, left) and workbench+receiving-tray (작업대/수령대, right) schematic furniture (default: true). */
+  showStations?: boolean;
   showAxes?: boolean;
   showStatusBadge?: boolean;
   /** Show built-in "Home" button overlay (default: true). */
@@ -100,6 +102,7 @@ export const DoosanM0609Viewer = forwardRef<ViewerInstance | null, DoosanM0609Vi
       connectionStatus,
       backgroundColor = "#0f172a",
       showGrid = true,
+      showStations = true,
       showAxes = true,
       showStatusBadge = true,
       showHomeButton = true,
@@ -157,6 +160,7 @@ export const DoosanM0609Viewer = forwardRef<ViewerInstance | null, DoosanM0609Vi
         angleUnit,
         backgroundColor,
         showGrid,
+        showStations,
         showAxes,
         clampToLimits,
         interpolationDelayMs,
@@ -205,6 +209,10 @@ export const DoosanM0609Viewer = forwardRef<ViewerInstance | null, DoosanM0609Vi
     useEffect(() => {
       viewerRef.current?.setShowGrid(showGrid);
     }, [showGrid]);
+
+    useEffect(() => {
+      viewerRef.current?.setShowStations(showStations);
+    }, [showStations]);
 
     useEffect(() => {
       viewerRef.current?.setShowAxes(showAxes);
