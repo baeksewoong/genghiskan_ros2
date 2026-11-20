@@ -1327,15 +1327,15 @@ def unload_move_j(name: str, j, log=print, linear: bool | None = None,
 
 def unload_return_path(receive_pos_id: int) -> list:
     """수령대 receive_pos_id에서 홈까지 복귀 경로 [(이름, posj), ...].
-    UNLOAD_RECV_RETURN_J에 수령대별 경로가 있으면 그것, 없으면 공통 UNLOAD_RETURN_J."""
-    return list(getattr(unload_poses, 'UNLOAD_RECV_RETURN_J', {}).get(
-        receive_pos_id, getattr(unload_poses, 'UNLOAD_RETURN_J', [])))
+    unload_poses.unload_return_path: 수령대별 앞부분(UNLOAD_RETURN_HEAD_J) + 공통 끝부분(UNLOAD_RETURN_TAIL_J)."""
+    return unload_poses.unload_return_path(receive_pos_id)
 
 
-def unload_return_home(receive_pos_id: int, log=print) -> None:
+def unload_return_home(receive_pos_id: int, log=print, start: int = 1) -> None:
     """그리퍼를 연 뒤 복귀 경로 전체를 movesj 한 번으로 이동 (경유점에서 멈추지 않는 관절 스플라인).
-    바로 앞 좌표와 같은 좌표는 빼고 넘긴다 (스플라인에 같은 점이 연속이면 안 됨)."""
-    path = unload_return_path(receive_pos_id)
+    바로 앞 좌표와 같은 좌표는 빼고 넘긴다 (스플라인에 같은 점이 연속이면 안 됨).
+    start: 복귀 경로의 몇 번째 점(1부터)부터 갈지 (테스트용, 기본 = 처음부터)."""
+    path = unload_return_path(receive_pos_id)[max(start, 1) - 1:]
     pts, names = [], []
     for name, j in path:
         if pts and list(j) == list(pts[-1]):
@@ -1501,7 +1501,7 @@ def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool
        (UNLOAD_MOVEL_FROM_STEP 이전은 movej, 이후는 UNLOAD_USE_MOVEL에 따라 movel)
     2) UNLOAD_RECV_J[receive_pos_id] 순서로 수령대 이동 (직전 좌표와 같으면 생략)
     3) grip_open()으로 수령대에 베드판 놓기
-    4) 복귀 경로(UNLOAD_RECV_RETURN_J[receive_pos_id], 없으면 UNLOAD_RETURN_J)를 movesj 한 번으로 홈 복귀
+    4) 복귀 경로(unload_poses.unload_return_path(receive_pos_id))를 movesj 한 번으로 홈 복귀
     좌표가 없는 수령대 번호나 추출 경로가 없는 층이면 움직이기 전에 예외 처리된다.
     """
     receive_pos_id = goal.receive_pos_id
