@@ -1,34 +1,30 @@
 """
-로봇 구체 동작 (Load / Unload).
+로봇 구체 동작 (Load / Unload / 조그 / 그리퍼). 설명: motions.md
 
-robot_action_server.py가 goal을 받으면 여기의 run_load() / run_unload()를 호출한다.
-  - 함수가 True(또는 None)를 돌려주면 -> 작업 성공 (success=True)
-  - 함수가 False를 돌려주면           -> 작업 실패 (success=False, 예: 무게 감지 안 됨)
-  - 함수 안에서 예외가 나면           -> 작업 실패 (success=False, message에 예외 내용)
+robot_action_server.py가 goal을 받으면 run_*()를 호출한다.
+  - True(또는 None) 반환 -> 성공 / False 반환 -> 실패 / 예외 -> 실패 (message에 예외 내용)
 
-Load 동작 흐름
-  run_load()                 층 = goal.start_pos_id (1, 2, 3)
-   ├─ home_to_board(층)      홈(그리퍼 열기) -> 준비 -> 진입 높이 -> (Z로 수직 하강) 진입 전 -> 적재대
-   └─ grip_and_check()       Fz(전) -> 그리퍼 닫기 -> +Z 들기 -> Fz(후) -> True/False
-                             (들어 올린 상태로 끝)
+구성 (공통 -> 작업 순서)
+  PART 1 공통      : 홈, 그리퍼, 힘 읽기, 이동 도우미, 자세 계산
+  PART 2 Load      : Load1 (적재대 잡기 + 판재 확인) -> Load2 (빼기 -> 작업대 이동 -> 넣기 -> 빼고 홈)
+  PART 3 Unload    : ※ 다른 사람 작업 (코드 그대로)
+  PART 4 조그/그리퍼: ※ 다른 사람 작업 (코드 그대로, 티칭 팬던트)
 
-주의: 이 파일은 DSR_ROBOT2를 맨 위에서 import 하므로, robot_action_server.py의
-main()이 DR_init 설정(로봇 ID, 모델, 노드)을 끝낸 뒤에 import 된다.
-이 파일을 단독으로 import 하거나 실행하면 안 된다.
+층별 좌표와 동작 순서는 poses.py / unload_poses.py에 있다.
+DSR_ROBOT2를 맨 위에서 import 하므로 robot_action_server.py의 DR_init 설정 뒤에 import 해야 한다 (단독 실행 X).
 """
 from __future__ import annotations
 
-from DR_common2 import posj, posx
 import math
+from contextlib import contextmanager
 
+from DR_common2 import posj, posx
 from DSR_ROBOT2 import (
-    DR_AXIS_Z,
     DR_BASE,
     DR_MV_MOD_REL,
     DR_TOOL,
     OFF,
     ON,
-    align_axis,
     fkin,
     get_current_posj,
     get_current_posx,
@@ -41,20 +37,8 @@ from DSR_ROBOT2 import (
     task_compliance_ctrl,
     wait,
 )
-# -------------------------------------------------------------------------
-# DR_MV_MOD_REL / DR_TOOL 검증 메모 (2026-11-18):
-# 이 개발 머신에는 DSR_ROBOT2가 설치돼 있지 않아(`python3 -c "import DSR_ROBOT2"` ->
-# ModuleNotFoundError) 실제 설치본에서 이 심볼들이 존재하는지 import 레벨로 확인하지
-# 못했다. 두산 공식 DRL 매뉴얼(movel/movej 문서, PRD 1장 참고 링크)상으로는 이
-# 이름들이 맞고, movel/movej의 mod=DR_MV_MOD_REL 상대 이동과 ref=DR_TOOL 툴
-# 좌표계 기준 이동이 공식 예제에 나온다 (Plan A). 실제 로봇/시뮬레이터(DRCF)가
-# 연결된 환경에서 ImportError가 나면, 설치된 DSR_ROBOT2 버전의 실제 심볼명을
-# 확인해 아래 run_jog()와 함께 고쳐야 한다 (PRD 9장 미결 사항, Plan B로
-# 전환할지도 그때 재판단).
-# (DR_QSTOP/DR_SSTOP/stop은 여기서 쓰지 않는다 - PRD 5.3대로 /sfarm/jog/stop
-# 서비스가 motions.py를 거치지 않고 robot_action_server.py에서 직접
-# DSR_ROBOT2를 import해 호출한다.)
-# -------------------------------------------------------------------------
+# DR_MV_MOD_REL / DR_TOOL은 두산 DRL 매뉴얼 기준 이름 (조그 상대 이동). 실제 설치본에서 ImportError가 나면
+# DSR_ROBOT2의 실제 심볼명을 확인해 run_jog()와 같이 고칠 것. 정지(stop)는 robot_action_server.py에서 직접 호출.
 
 from sfarm_interfaces.action import (
     Gripper,
@@ -70,82 +54,56 @@ from sfarm_interfaces.action import (
 from . import poses, unload_poses
 
 # ---------------------------------------------------------------- 속도
-VELJ, ACCJ = 30.0, 30.0      # 관절 이동 (movej)
-VELX, ACCX = 100.0, 100.0    # 직선 이동 (movel)
-# 빈손(판재 안 든 상태) 이동 속도: 홈 -> 적재대 다가가기, 판재 내려놓은 뒤 빠지기, load2 끝나고 홈 복귀.
-#   적재대 잡는 곳으로 들어가는 마지막 구간과 판재를 든 이동은 위 기본 속도 그대로.
-EMPTY_VELJ, EMPTY_ACCJ = 100.0, 100.0   # 빈손 movej (홈, 준비 자세, 홈 복귀)
-EMPTY_VELX, EMPTY_ACCX = 100.0, 100.0
-# 판재 들고 이동 (잡고 30mm 들기, 적재대 빼기, sd 3으로 movej)
-CARRY_VELJ, CARRY_ACCJ = 60.0, 60.0
-CARRY_VELX, CARRY_ACCX = 60.0, 60.0
-# 넣고 놓은 뒤 짧게 빼기(SD_RETREAT_STEPS의 x/y/z 단계, 예: retreat 1) 속도. 'entrance' 단계는 INSERT_VELX(30).
-QUICK_RETREAT_VELX = 60.0
-# 프린터 안 (다가가기, 직선 넣기, 빼기, sd 3 첫 점/입구)은 INSERT_VELX(30). 마지막 순응 밀기만 PUSH_VELX(10).
+VELJ, ACCJ = 30.0, 30.0                    # 기본 movej
+VELX, ACCX = 100.0, 100.0                  # 기본 movel
+EMPTY_VELJ, EMPTY_ACCJ = 100.0, 100.0      # 빈손 movej (홈, 준비, 홈 복귀)
+EMPTY_VELX, EMPTY_ACCX = 100.0, 100.0      # 빈손 movel (적재대 다가가기)
+CARRY_VELJ, CARRY_ACCJ = 60.0, 60.0        # 판재 들고 movej (sd 3으로)
+CARRY_VELX, CARRY_ACCX = 60.0, 60.0        # 판재 들고 movel (들기, 적재대 빼기)
+QUICK_RETREAT_VELX = 60.0                  # 놓은 뒤 x/y/z로 빼기
+INSERT_VELX, INSERT_ACCX = 30.0, 30.0      # 프린터 안 (다가가기, 넣기, 입구로 빼기)
+STRAIGHT_VELX, STRAIGHT_ACCX = 30.0, 30.0  # 입구 -> 끝 직선 넣기
+PUSH_VELX, PUSH_ACCX = 10.0, 10.0          # 순응 제어로 밀기
+ROT_VELX_DEG, ROT_ACCX_DEG = 5.0, 5.0      # 다가가기 회전 단계 (도/s)
+ROT_WAIT_SEC = 0.5                         # 회전 단계 뒤 멈춤 (s)
 
-# 준비(1단계) -> 진입 전 -> 적재대 이동 방식 (홈, 준비 위치는 항상 movej)
-#   True : movel (posx, 직선 이동)
-#   False: movej (posj, 관절 이동) - movel에서 문제 생기면 이걸로 되돌리기
+# 적재대 진입 전 -> 잡는 곳 이동: True = movel(posx), False = movej(posj, movel 문제 시 되돌리기용)
 USE_MOVEL = True
+REACH_TOL_MM = 3.0   # movel 도착 확인 허용 오차. 못 가는 좌표면 movel이 에러 없이 넘어가서 직접 확인
 
-# ---------------------------------------------------------------- 집기 / 무게 감지
-LIFT_Z_MM = 30.0           # 잡은 뒤 들어 올리는 높이 (+Z, mm)
-WEIGHT_THRESHOLD_N = 0.7   # (안 씀, 예전 무게 판정) 들기 전/후 Fz 차이 기준. 판재가 너무 가벼워 숙여 누르기로 바꿈
-# 판재 있음 판정 (2026-11-19): 잡고 30mm 들어 올린 뒤 ry로 앞쪽을 숙이면 판재 끝이 선반에 닿아 위로 밀어 올림.
-#   숙인 뒤 Fz가 기준보다 크면(덜 음수면) 판재 있음.
-#   숙이기 전 Fz는 그때그때 -11 ~ -15N으로 4N씩 달라서 차이(숙인 뒤 - 전)로는 기준이 흔들림 ->
-#   숙인 뒤 Fz 값 자체로 판정. 실측 9번: 있을 때 -11.66 ~ -12.06N, 없을 때 -12.70 ~ -13.06N -> 가운데 -12.4N
-TILT_CHECK_DEG = 9.0       # 숙이는 각도 (도). 판재 끝(약 215mm)이 약 34mm 내려가 선반에 닿음
-TILT_CHECK_FZ_N = -12.4    # 숙인 뒤 Fz가 이 값보다 크면 판재 있음
-TILT_CHECK_SETTLE_SEC = 1.0  # 숙이기 전/후 힘 재기 전 기다리는 시간 (s)
-TILT_CHECK_SAMPLES = 10    # 힘 평균 횟수 (FORCE_SAMPLE_INTERVAL 0.1s 간격 -> 약 1초)
-FORCE_SAMPLES = 5          # 힘 측정 평균 낼 횟수
+# ---------------------------------------------------------------- 힘 측정
+FORCE_SAMPLES = 5            # 평균 횟수
 FORCE_SAMPLE_INTERVAL = 0.1  # 측정 간격 (s)
-SETTLE_SEC = 0.5           # 움직임이 끝나고 힘을 재기 전 기다리는 시간 (s)
+SETTLE_SEC = 0.5             # 이동 후 힘 재기 전 대기 (s)
 
-# movel이 도착했는지 확인할 때 허용 오차 (mm). 못 가는 좌표(NOT REACHABLE)면 movel이
-# 에러 없이 그냥 넘어가므로, 이동 뒤 현재 위치를 재서 확인한다.
-REACH_TOL_MM = 3.0
+# ---------------------------------------------------------------- Load1: 잡기 / 판재 확인
+LIFT_Z_MM = 30.0             # 잡은 뒤 들어 올리는 높이
+# 판재 확인: 들어 올린 뒤 ry로 앞쪽을 숙여 판재 끝이 선반을 누르게 -> 숙인 뒤 Fz > 기준이면 판재 있음.
+#   층별 값은 poses.TILT_CHECK_*_BY_LAYER (없으면 아래 기본값, 실측: 있음 -11.7~-12.1N / 없음 -12.7~-13.1N)
+TILT_CHECK_DEG = 9.0
+TILT_CHECK_FZ_N = -12.4
+TILT_CHECK_SETTLE_SEC = 1.0
+TILT_CHECK_SAMPLES = 10
+PUT_BACK_RETREAT_MM = 100.0  # 판재 없음: 내려놓고 그리퍼 연 뒤 -X로 빠지는 거리
 
-# ---------------------------------------------------------------- 판재 빼기
-BED_LENGTH_MM = 215.0      # 판재(베드) 길이 (참고용)
-PULL_OUT_MM = 230.0        # 들어 올린 뒤 -X로 빼는 거리 (판재 길이 + 여유 15mm)
+# ---------------------------------------------------------------- Load2: 적재대 빼기 (RACK_EXIT_STEPS 없는 층)
+PULL_OUT_MM = 230.0          # -X로 빼는 거리 (판재 215mm + 여유)
 
-# ---------------------------------------------------------------- 작업대에 판재 넣기
-INSERT_VELX, INSERT_ACCX = 30.0, 30.0   # 좌우로 흔들며 정렬할 때 속도 (느리게)
-ROT_VELX_DEG, ROT_ACCX_DEG = 5.0, 5.0   # insert/retreat 다가가기의 회전 단계(rx/ry/rz) 회전 속도 (도/s, 천천히)
-ROT_WAIT_SEC = 0.5                      # 그 회전이 끝난 뒤 잠깐 멈춤 (s) - 팍팍 튀지 않게
-STRAIGHT_VELX, STRAIGHT_ACCX = 30.0, 30.0  # 입구 -> 끝 직선으로 넣을 때 속도 (프린터 안 = 30)
-WIGGLE_ENABLE = False      # True: 처음 WIGGLE_DEPTH_MM 동안 좌우로 흔들며 들어감 / False: 흔들지 않고 바로 일자로
-WIGGLE_Y_MM = 3.0          # 입구에서 좌우(Y)로 흔드는 최대 폭 (+-3mm)
-WIGGLE_DEPTH_MM = 30.0     # 처음 이만큼 들어가는 동안 좌우로 흔들며 정렬
-WIGGLE_STEP_MM = 10.0      # 흔들기 한 번마다 앞으로 가는 거리
-WIGGLE_Y_STEP_MM = 0.5     # 옆으로 갈 때 이만큼씩 가며 매번 옆 힘(Fy) 확인
-WIGGLE_CONTACT_N = 3.0     # 옆 힘 변화가 이 값 이상이면 옆에 닿음 -> 반대로 물러나기
-WIGGLE_BACKOFF_MM = 5.0    # 옆에 닿으면 반대 방향으로 이만큼 (0.5cm) 물러남 (힘이 안 풀리면 한 번 더)
-WIGGLE_BACKOFF_MAX_MM = 5.0  # 이만큼 물러나도 힘이 안 풀리면 멈춤 (잡은 채로)
-WIGGLE_FORCE_SAMPLES = 2   # 흔들 때 한 번 재는 횟수 (적을수록 빠름)
-# 넣는 길: 입구(SD_INSERT_FRONT) -> 끝(SD_INSERT_DONE) 직선 (측정한 자세 그대로).
-JAM_FORCE_N = 20.0         # 위치 이동 중 X/Y 힘 변화가 이 값 넘으면 걸림 -> 멈춤 (놓지 않음)
-PUSH_START_BEFORE_MM = 10.0  # 끝 이만큼 앞까지는 위치 제어로 일자로 넣고, 거기서부터 순응 제어로 밀기
-PUSH_OVERSHOOT_MM = 15.0   # 끝보다 이만큼 더까지 (같은 직선 방향으로) 순응 제어 목표를 보냄 (그래도 완료 아니면 실패)
-PUSH_FORCE_N = 5.0         # 끝에 닿은 채로 목표가 끝 + PUSH_OVERSHOOT_MM까지 가면 이 힘(N)으로 누르게 강성 자동 계산
-PUSH_STEP_MM = 5.0         # 순응 제어로 밀 때 이만큼씩 끊어 가며 매번 확인
-PUSH_VELX, PUSH_ACCX = 10.0, 10.0  # 순응 제어로 밀 때 속도 (아주 느리게)
-PUSH_FORCE_SAMPLES = 2     # 한 번 재는 횟수 (적을수록 빠름)
-# 넣기 완료 판정: 위치와 힘 둘 다 맞으면 완료 -> 그리퍼 열기
-DONE_POS_TOL_MM = 2.0      # 직선 위 진행 거리가 끝 - 이 값 이상이면 '위치 도착'
-DONE_REACT_N = 1.0         # 미는 방향 반력(기준 대비)이 이 값 이상이면 '힘 맞음' (PUSH_FORCE_N보다 작아야 함)
-# (예전 CONTACT_LAG_MM '덜 감' 판정은 뺐음: 무른 순응 제어에서 가이드 마찰만으로도 걸려 끝 전에 멈췄음)
-# 밀 때 순응 강성 (N/m, Nm/rad). 첫 값(X, 미는 방향)은 insert에서 PUSH_FORCE_N으로 다시 계산해서 덮어씀.
-COMPLIANCE_STX = [500, 3000, 3000, 200, 200, 200]
-# 진입 대기 위치에서 툴 Z축(판재 미는 방향)을 미는 방향(+X, 수평)에 맞춘 뒤 들어감 (판재 기울기 보정)
-# 지금은 motion_test의 sd 명령에서만 사용 (sd -> 축정렬 -> insert는 정렬된 자세 유지). load2 액션은 안 함.
-ALIGN_VECT = [1.0, 0.0, 0.0]   # 베이스 기준 미는 방향 (+X)
-ALIGN_MAX_DEG = 15.0           # 지금 툴 Z축과 이 각도보다 많이 다르면 정렬 안 하고 멈춤 (안전)
-PRE_INSERT_HOLD_SEC = 3.0      # sd 다음 첫 점(SD_PRE_INSERT)에서 멈추는 시간 (s)
+# ---------------------------------------------------------------- Load2: 작업대 넣기
+PRE_INSERT_HOLD_SEC = 3.0    # 첫 점(입구 전)에서 멈춤 (s)
+JAM_FORCE_N = 20.0           # 위치 제어로 넣는 중 X/Y 힘 변화가 이 값 넘으면 걸림 -> 멈춤 (잡은 채로)
+PUSH_START_BEFORE_MM = 10.0  # 끝 이만큼 앞부터 순응 제어로 밀기
+PUSH_OVERSHOOT_MM = 15.0     # 끝보다 이만큼 더까지 목표를 보냄 (층별: poses.SD_PUSH_OVERSHOOT_MM)
+PUSH_FORCE_N = 5.0           # 끝 + PUSH_OVERSHOOT_MM에서 이 힘이 되게 X 강성 계산
+PUSH_STEP_MM = 5.0           # 순응 밀기 한 번 거리
+PUSH_FORCE_SAMPLES = 2
+CHECK_STEP_MM = 5.0          # SD_INSERT_CHECK_ONLY 층(1층) 순응 밀기 한 번 거리
+DONE_POS_TOL_MM = 2.0        # 진행 >= 끝 - 이 값이면 위치 도착
+DONE_REACT_N = 1.0           # 반력 > 이 값이면 힘 맞음 (층별: poses.SD_DONE_REACT_N)
+COMPLIANCE_STX = [500, 3000, 3000, 200, 200, 200]   # 순응 강성 (N/m, Nm/rad). X는 PUSH_FORCE_N으로 다시 계산
+KEEP_Z_STIFF_N_M = 20000.0   # SD_INSERT_KEEP_Z 층: Z 강성 최대 -> 밀 때 높이 고정
 
-# ---------------------------------------------------------------- 작업대에서 판재 꺼내기 (Unload1)
+# ---------------------------------------------------------------- Unload (※ 다른 사람 작업)
 UNLOAD_VELJ, UNLOAD_ACCJ = 22.5, 22.5
 UNLOAD_VELX, UNLOAD_ACCX = 67.5, 67.5
 # 수령대에 놓은 뒤 홈 복귀: 경유 좌표 전체를 movesj(관절 스플라인) 한 번으로 멈춤 없이 이동.
@@ -168,37 +126,49 @@ UNLOAD_CATCH_FORCE_N = 0.7          # X 방향 힘 변화가 이 값(N) 이상�
 UNLOAD_PULL_FORCE_SAMPLES = 3       # 힘 측정 평균 횟수
 UNLOAD_PULL_REACH_TOL_MM = 3.0      # 위치 제어 이동 허용 오차 (mm)
 
+_ROT = ('rx', 'ry', 'rz')
 
-# ---------------------------------------------------------------- 기본 동작 단위
+
+# ============================================================================
+# PART 1. 공통 - 홈 / 그리퍼 / 힘 읽기 / 이동 도우미 / 자세 계산
+# ============================================================================
+
+# ---- 1-1. 홈, 그리퍼, 힘 읽기
 def go_home(fast: bool = False) -> None:
-    """홈(대기) 위치로 이동. fast=True면 빈손 속도(EMPTY_VELJ)."""
-    v, a = (EMPTY_VELJ, EMPTY_ACCJ) if fast else (VELJ, ACCJ)
-    movej(posj(*poses.HOME_J), vel=v, acc=a)
+    """홈으로 movej. fast=True면 빈손 속도."""
+    _movej(poses.HOME_J, fast)
+
+
+def _grip(close: bool) -> None:
+    set_digital_output(1, ON if close else OFF)
+    set_digital_output(2, OFF if close else ON)
+    wait(1.5)
 
 
 def grip_close() -> None:
-    """그리퍼 닫기 (잡기)."""
-    set_digital_output(1, ON)
-    set_digital_output(2, OFF)
-    wait(1.5)
+    _grip(True)
 
 
 def grip_open() -> None:
-    """그리퍼 열기 (놓기)."""
-    set_digital_output(1, OFF)
-    set_digital_output(2, ON)
-    wait(1.5)
+    _grip(False)
+
+
+def read_force_xyz(samples: int = FORCE_SAMPLES) -> list:
+    """베이스 기준 툴 외력 [Fx, Fy, Fz](N) 평균."""
+    total = [0.0, 0.0, 0.0]
+    for _ in range(samples):
+        f = get_tool_force(DR_BASE)
+        total = [total[i] + float(f[i]) for i in range(3)]
+        wait(FORCE_SAMPLE_INTERVAL)
+    return [v / samples for v in total]
 
 
 def read_fz() -> float:
-    """베이스 기준 툴 외력 Fz(N)를 여러 번 재서 평균."""
-    total = 0.0
-    for _ in range(FORCE_SAMPLES):
-        total += float(get_tool_force(DR_BASE)[2])
-        wait(FORCE_SAMPLE_INTERVAL)
-    return total / FORCE_SAMPLES
+    """베이스 기준 Fz(N) 평균 (unload.py에서 사용)."""
+    return read_force_xyz()[2]
 
 
+# ---- 1-2. 지금 위치 읽기 (※ 다른 사람 작업 - 티칭 팬던트용)
 def get_current_poses() -> tuple[list[float], list[float]]:
     """현재 로봇의 관절 좌표(posj)와 직교 좌표(posx)를 float[6] 리스트로 반환."""
     cur_j = get_current_posj()
@@ -218,150 +188,105 @@ def get_current_poses() -> tuple[list[float], list[float]]:
     return posj_vals, posx_vals
 
 
-def go_ready(layer: int, fast: bool = False) -> None:
-    """layer층 준비 위치(1단계: 홈 자리에서 그리퍼를 옆으로 눕힌 자세)로 이동.
-
-    홈과 손목 자세(J5 90 -> -17)가 크게 달라 movel로 가면 J5=0 특이점을 지나므로 항상 movej.
-    """
-    v, a = (EMPTY_VELJ, EMPTY_ACCJ) if fast else (VELJ, ACCJ)
-    movej(posj(*poses.START_POS_READY_J[layer]), vel=v, acc=a)
+# ---- 1-3. 이동 도우미 (모든 movel은 도착 확인)
+def _cur_x() -> list:
+    return list(get_current_posx()[0])
 
 
-def _movel_checked(pose_x: list, fast: bool = False, vel: float | None = None) -> None:
-    """movel 후 실제로 목표 위치(X, Y, Z)에 도착했는지 확인. 못 갔으면 예외 -> 다음 동작 안 함.
-
-    fast=True면 빈손 속도(EMPTY_VELX), vel을 주면 그 속도(acc도 같은 값).
-    """
-    v, a = (EMPTY_VELX, EMPTY_ACCX) if fast else (VELX, ACCX)
-    if vel is not None:
-        v = a = vel
-    movel(posx(*pose_x), vel=v, acc=a)
-    cur = list(get_current_posx()[0])
-    err = max(abs(cur[i] - pose_x[i]) for i in range(3))
-    if err > REACH_TOL_MM:
-        raise RuntimeError(
-            f'목표 위치에 못 감 (NOT REACHABLE?) 목표={[round(v, 1) for v in pose_x[:3]]} '
-            f'현재={[round(v, 1) for v in cur[:3]]}')
+def _r(p, n: int = 1) -> list:
+    """로그용 반올림."""
+    return [round(v, n) for v in p]
 
 
-def go_entry_top(layer: int, fast: bool = False) -> None:
-    """layer층 진입 전 X, Y 위치를 공통 진입 높이(ENTRY_LAYER층 진입 전 Z)로 직선 이동.
-
-    여기서 Z로만 내리면(또는 올리면) layer층 진입 전이 된다.
-    ENTRY_LAYER층 자신은 진입 전 위치와 같은 곳.
-    """
-    top = list(poses.START_POS_APPROACH_X[layer])
-    top[2] = poses.START_POS_APPROACH_X[poses.ENTRY_LAYER][2]
-    _movel_checked(top, fast=fast)
+def _dist(a: list, b: list) -> float:
+    """두 점의 X/Y/Z 거리 (mm)."""
+    return math.sqrt(sum((b[i] - a[i]) ** 2 for i in range(3)))
 
 
-def _move_to(pose_j: list, pose_x: list, fast: bool = False) -> None:
-    """USE_MOVEL에 따라 movel(posx) 또는 movej(posj)로 이동. fast=True면 빈손 속도."""
-    if USE_MOVEL:
-        _movel_checked(pose_x, fast=fast)
-    else:
-        if pose_j is None:
-            raise ValueError('관절 좌표(J)가 없어 movej로 갈 수 없음 (USE_MOVEL=True로 쓰거나 J 측정)')
-        v, a = (EMPTY_VELJ, EMPTY_ACCJ) if fast else (VELJ, ACCJ)
-        movej(posj(*pose_j), vel=v, acc=a)
-
-
-# ---------------------------------------------------------------- 이동 / 집기
-class MotionStopped(Exception):
-    """단계 진행 중 사용자가 멈춤 (motion_test의 board_step에서 사용)."""
-
-
-def home_to_board(layer: int = 3, until: int | None = None, before_step=None) -> None:
-    """홈(그리퍼 열기) -> 준비 -> 진입 높이 -> 진입 전(Z 수직 하강) -> 적재대 layer층 위치로 이동.
-
-    until      : 이 단계까지만 가고 멈춤
-                 (0=홈, 1=준비, 2=진입 높이, 3=진입 전, 4=적재대). None이면 끝까지.
-    before_step: 각 단계 직전에 호출할 함수 f(단계번호, 이름). False를 돌려주면 거기서 멈춤.
-    """
-    for table, name in ((poses.START_POS_READY_J, 'START_POS_READY'),
-                        (poses.START_POS_APPROACH_X, 'START_POS_APPROACH'),
-                        (poses.START_POS_PICK_X, 'START_POS_PICK')):
+def _need(layer: int, *tables: tuple[dict, str]) -> None:
+    """(표, 이름)마다 layer층 좌표가 있는지 확인. 없으면 움직이기 전에 예외."""
+    for table, name in tables:
         if layer not in table:
             raise ValueError(f'{name}에 {layer}층 좌표 없음 (가능: {list(table)})')
 
-    steps = [
-        # 홈 -> 진입 전까지는 빈손이라 빠르게 (fast). 잡는 곳으로 들어가는 마지막만 기본 속도.
-        ('홈 (그리퍼 열기)', lambda: (go_home(fast=True), grip_open())),  # 홈은 항상 movej
-        (f'적재대 {layer}층 준비', lambda: go_ready(layer, fast=True)),  # 준비도 항상 movej
-        (f'진입 높이 (적재대 {poses.ENTRY_LAYER}층 진입 전 높이)', lambda: go_entry_top(layer, fast=True)),
-        (f'적재대 {layer}층 진입 전 (Z로 수직 하강)',
-         lambda: _move_to(poses.START_POS_APPROACH_J.get(layer), poses.START_POS_APPROACH_X[layer], fast=True)),
-        (f'적재대 {layer}층',
-         lambda: _move_to(poses.START_POS_PICK_J.get(layer), poses.START_POS_PICK_X[layer])),
-    ]
-    for i, (name, move) in enumerate(steps):
-        if until is not None and i > until:
-            return
-        if before_step is not None and before_step(i, name) is False:
-            raise MotionStopped(f'{i}단계({name}) 전에 멈춤')
-        move()
+
+def _movej(pose_j: list, fast: bool = False) -> None:
+    v, a = (EMPTY_VELJ, EMPTY_ACCJ) if fast else (VELJ, ACCJ)
+    movej(posj(*pose_j), vel=v, acc=a)
 
 
-def grip_and_check(pose_x: list, log=print, layer: int | None = None) -> bool:
-    """지금 위치(pose_x)에서 잡고 +Z로 들어 올린 뒤, 숙여 눌러서 판재가 있는지 확인.
-
-    1) 그리퍼 닫기 -> +Z LIFT_Z_MM 들어 올리기
-    2) Fz 측정 (숙이기 전, 로그용)
-    3) 그리퍼 끝 위치 그대로 ry +TILT_CHECK_DEG (앞쪽 숙임) -> Fz 측정 (숙인 뒤) -> ry -TILT_CHECK_DEG 원래대로
-    4) 숙인 뒤 Fz > TILT_CHECK_FZ_N 이면 True (판재 끝이 선반에 닿아 위로 미는 반력)
-    판재가 너무 가벼워 무게(들기 전/후 Fz)로는 구분이 안 돼서 이 방식으로 바꿈 (2026-11-19).
-    layer를 주면 poses.TILT_CHECK_DEG_BY_LAYER / TILT_CHECK_FZ_BY_LAYER의 층별 값을 쓴다 (없으면 기본값).
-    """
-    deg = getattr(poses, 'TILT_CHECK_DEG_BY_LAYER', {}).get(layer, TILT_CHECK_DEG)
-    fz_n = getattr(poses, 'TILT_CHECK_FZ_BY_LAYER', {}).get(layer, TILT_CHECK_FZ_N)
-    grip_close()
-    lifted = list(pose_x)
-    lifted[2] += LIFT_Z_MM
-    _movel_checked(lifted, vel=CARRY_VELX)   # 판재 들기
-    wait(TILT_CHECK_SETTLE_SEC)
-    fz0 = read_force_xyz(TILT_CHECK_SAMPLES)[2]
-    tilt_base('y', deg, log=log, check=False)
-    wait(TILT_CHECK_SETTLE_SEC)
-    fz1 = read_force_xyz(TILT_CHECK_SAMPLES)[2]
-    tilt_base('y', -deg, log=log, check=False)
-    picked = fz1 > fz_n
-    log(f'[판재 확인] {layer if layer is not None else "?"}층 ry +{deg:g}도 숙여 누르기: 전 Fz={fz0:.2f}N  숙인 뒤 Fz={fz1:.2f}N '
-        f'(차이 {fz1 - fz0:+.2f}N)  기준: 숙인 뒤 Fz > {fz_n}N  -> {"판재 있음" if picked else "판재 없음"}')
-    return picked
-
-def pull_out(dist: float = PULL_OUT_MM, log=print) -> None:
-    """지금 위치에서 높이(Z), 옆(Y), 자세는 그대로 두고 -X로 dist(mm)만큼 일자로 빼기.
-
-    판재를 잡고 들어 올린 상태(grip_and_check 뒤)에서 쓴다. 그리퍼는 그대로.
-    못 가는 거리면(J3 한계) 그 자리에서 예외가 난다 (_movel_checked).
-    가상 로봇 확인: 3층(Z 370)은 230mm 가능, 2층(Z 278)은 150mm까지, 1층(Z 185)은 100mm까지.
-    """
-    cur = list(get_current_posx()[0])
-    target = list(cur)
-    target[0] -= dist
-    log(f'[빼기] X {cur[0]:.1f} -> {target[0]:.1f} (-{dist:.0f}mm), Y {cur[1]:.1f}, Z {cur[2]:.1f} 유지')
-    _movel_checked(target, vel=CARRY_VELX)
-
-
-def rise_to_top(log=print) -> None:
-    """(판재를 다 뺀 뒤) 지금 X, Y, 자세는 그대로 두고 3층 들어 올린 높이까지 Z로만 수직으로 올라가기.
-
-    3층 높이 = 적재대 3층 잡는 곳 Z + LIFT_Z_MM. 이미 그 높이 이상이면 안 움직인다.
-    1, 2층 판재를 뺀 뒤 작업대로 가기 전에 쓴다 (작업대 3층으로 가는 movej가 낮은 곳에서 시작하지 않게).
-    """
-    top_z = poses.START_POS_PICK_X[poses.ENTRY_LAYER][2] + LIFT_Z_MM
-    cur = list(get_current_posx()[0])
-    if cur[2] >= top_z - REACH_TOL_MM:
-        log(f'[올리기] 지금 Z {cur[2]:.1f} >= 3층 높이 {top_z:.1f} -> 안 움직임')
+def _go(target: list, vel, acc, what: str = '목표', check: bool = True, log=print) -> None:
+    """movel 후 도착 확인 (못 가는 좌표면 movel이 에러 없이 넘어가서). check=False면 경고만."""
+    movel(posx(*target), vel=vel, acc=acc)
+    now = _cur_x()
+    err = max(abs(now[i] - target[i]) for i in range(3))
+    if err <= REACH_TOL_MM:
         return
-    target = list(cur)
-    target[2] = top_z
-    log(f'[올리기] Z {cur[2]:.1f} -> {top_z:.1f} (3층 높이, X {cur[0]:.1f} Y {cur[1]:.1f} 그대로)')
-    _movel_checked(target, vel=CARRY_VELX)
+    msg = f'{what}까지 못 감 (차이 {err:.1f}mm, 목표 {_r(target[:3])}, 지금 {_r(now[:3])}, NOT REACHABLE?)'
+    if check:
+        raise RuntimeError(msg)
+    log(f'  [경고] {msg} -> 그대로 계속')
 
 
+def _movel_checked(pose_x: list, fast: bool = False, vel: float | None = None) -> None:
+    """fast=True면 빈손 속도, vel을 주면 그 속도(acc도 같게), 아니면 기본 속도."""
+    v, a = (vel, vel) if vel is not None else (EMPTY_VELX, EMPTY_ACCX) if fast else (VELX, ACCX)
+    _go(pose_x, v, a)
+
+
+def _movel_slow(target: list, name: str, rotate: bool = False) -> None:
+    """INSERT_VELX. rotate=True면 회전을 ROT_VELX_DEG로 천천히 하고 ROT_WAIT_SEC 멈춤."""
+    if rotate:
+        _go(target, [INSERT_VELX, ROT_VELX_DEG], [INSERT_ACCX, ROT_ACCX_DEG], name)
+        wait(ROT_WAIT_SEC)
+    else:
+        _go(target, INSERT_VELX, INSERT_ACCX, name)
+
+
+def _move_to(pose_j: list | None, pose_x: list, fast: bool = False) -> None:
+    """USE_MOVEL이면 movel(posx), 아니면 movej(posj)."""
+    if USE_MOVEL:
+        _movel_checked(pose_x, fast=fast)
+    elif pose_j is None:
+        raise ValueError('관절 좌표(J)가 없어 movej로 갈 수 없음 (USE_MOVEL=True로 쓰거나 J 측정)')
+    else:
+        _movej(pose_j, fast)
+
+
+def move_rel(dx: float = 0.0, dy: float = 0.0, dz: float = 0.0, log=print, check: bool = True,
+             vel: float = INSERT_VELX) -> None:
+    """자세 그대로 X/Y/Z mm 직선 이동."""
+    cur = _cur_x()
+    target = [cur[0] + dx, cur[1] + dy, cur[2] + dz] + cur[3:]
+    log(f'  [이동] {_r(cur[:3])} -> {_r(target[:3])} (dX {dx:+.0f} dY {dy:+.0f} dZ {dz:+.0f})')
+    _go(target, vel, vel, check=check, log=log)
+
+
+def tilt_base(axis: str, deg: float, log=print, check: bool = True) -> None:
+    """그리퍼 끝 위치 그대로 베이스 axis축으로 deg 회전 (10도/s).
+
+    그리퍼가 +X를 볼 때 rx = 좌우 눕히기, ry = 앞쪽 숙이기(+)/들기, rz = 좌우 돌리기.
+    """
+    cur = _cur_x()
+    target = cur[:3] + rotate_about_base(axis, cur[3:6], deg)
+    log(f'  [r{axis} {deg:+.1f}도] 자세 {_r(cur[3:6], 2)} -> {_r(target[3:6], 2)}')
+    _go(target, [INSERT_VELX, 10.0], [INSERT_ACCX, 10.0], f'r{axis} 회전', check, log)
+
+
+def _rel_step(kind: str, val: float, log=print, vel: float = INSERT_VELX, check: bool = True) -> None:
+    """순서 표의 한 단계 실행: ('x'/'y'/'z', mm) 직선 / ('rx'/'ry'/'rz', 도) 회전."""
+    if kind in ('x', 'y', 'z'):
+        d = [0.0, 0.0, 0.0]
+        d['xyz'.index(kind)] = val
+        move_rel(*d, log=log, check=check, vel=vel)
+    elif kind in _ROT:
+        tilt_base(kind[1], val, log=log, check=check)
+    else:
+        raise ValueError(f'단계 종류를 모름: {kind} (x / y / z / rx / ry / rz)')
+
+
+# ---- 1-4. 자세 계산 (두산 posx 자세 = ZYZ 오일러, 도)
 def _zyz_to_mat(a: float, b: float, c: float) -> list:
-    """두산 posx 자세 (A, B, C) = ZYZ 오일러(도) -> 3x3 회전행렬."""
     a, b, c = (math.radians(v) for v in (a, b, c))
     ca, sa, cb, sb, cc, sc = math.cos(a), math.sin(a), math.cos(b), math.sin(b), math.cos(c), math.sin(c)
     return [[ca * cb * cc - sa * sc, -ca * cb * sc - sa * cc, ca * sb],
@@ -370,9 +295,8 @@ def _zyz_to_mat(a: float, b: float, c: float) -> list:
 
 
 def _mat_to_zyz(m: list) -> list:
-    """3x3 회전행렬 -> ZYZ 오일러(도) [A, B, C]."""
     b = math.atan2(math.hypot(m[0][2], m[1][2]), m[2][2])
-    if abs(math.sin(b)) < 1e-9:   # B = 0 또는 180 (특이점): C = 0으로 둠
+    if abs(math.sin(b)) < 1e-9:   # 특이점 (B = 0/180): C = 0
         return [math.degrees(math.atan2(m[1][0], m[0][0])), math.degrees(b), 0.0]
     a = math.atan2(m[1][2], m[0][2])
     c = math.atan2(m[2][1], -m[2][0])
@@ -380,7 +304,7 @@ def _mat_to_zyz(m: list) -> list:
 
 
 def rotate_about_base(axis: str, abc: list, deg: float) -> list:
-    """자세 abc를 베이스 axis('x'/'y'/'z')축으로 deg만큼 돌린 자세 [A, B, C] (위치는 안 바뀜)."""
+    """자세 abc를 베이스 axis('x'/'y'/'z')축으로 deg 돌린 자세."""
     c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
     rot = {'x': [[1, 0, 0], [0, c, -s], [0, s, c]],
            'y': [[c, 0, s], [0, 1, 0], [-s, 0, c]],
@@ -389,845 +313,62 @@ def rotate_about_base(axis: str, abc: list, deg: float) -> list:
     return _mat_to_zyz([[sum(rot[i][k] * m[k][j] for k in range(3)) for j in range(3)] for i in range(3)])
 
 
-def rotate_about_base_y(abc: list, deg: float) -> list:
-    """자세 abc를 베이스 Y축으로 deg만큼 돌린 자세 [A, B, C] (위치는 안 바뀜)."""
-    return rotate_about_base('y', abc, deg)
-
-
-def move_rel(dx: float = 0.0, dy: float = 0.0, dz: float = 0.0, log=print, check: bool = True,
-             vel: float = INSERT_VELX) -> None:
-    """지금 자세 그대로 X/Y/Z로 mm만큼 직선 이동 (INSERT_VELX, 느리게).
-
-    check=True면 목표에서 REACH_TOL_MM 넘게 벗어나면 예외, False면 경고만 찍고 계속.
-    """
-    cur = list(get_current_posx()[0])
-    target = list(cur)
-    target[0] += dx
-    target[1] += dy
-    target[2] += dz
-    log(f'  [이동] {[round(v, 1) for v in cur[:3]]} -> {[round(v, 1) for v in target[:3]]} '
-        f'(dX {dx:+.0f} dY {dy:+.0f} dZ {dz:+.0f})')
-    movel(posx(*target), vel=vel, acc=vel)
-    now = list(get_current_posx()[0])
-    err = max(abs(now[i] - target[i]) for i in range(3))
-    if err > REACH_TOL_MM:
-        msg = (f'목표까지 못 감 (차이 {err:.1f}mm, 지금 {[round(v, 1) for v in now[:3]]}, '
-               f'NOT REACHABLE일 수 있음)')
-        if check:
-            raise RuntimeError(msg)
-        log(f'  [경고] {msg} -> 그대로 계속')
-
-
-def tilt_ry(deg: float, log=print) -> None:
-    """그리퍼 끝 위치 그대로 베이스 Y축으로 deg만큼 기울이기 (그리퍼가 +X를 볼 때 + = 판재 앞쪽 숙임)."""
-    tilt_base('y', deg, log=log)
-
-
-def tilt_base(axis: str, deg: float, log=print, check: bool = True) -> None:
-    """그리퍼 끝 위치 그대로 베이스 axis('x'/'y'/'z')축으로 deg만큼 돌리기 (10도/s). 못 가면 예외.
-
-    그리퍼가 +X를 볼 때: rx = 판재를 좌우로 눕히기(롤), ry = 앞쪽 숙이기/들기(피치), rz = 좌우로 돌리기(요).
-    """
-    cur = list(get_current_posx()[0])
-    target = cur[:3] + rotate_about_base(axis, cur[3:6], deg)
-    log(f'  [r{axis} {deg:+.1f}도] 자세 {[round(v, 2) for v in cur[3:6]]} -> {[round(v, 2) for v in target[3:6]]}')
-    movel(posx(*target), vel=[INSERT_VELX, 10.0], acc=[INSERT_ACCX, 10.0])
-    now = list(get_current_posx()[0])
-    err = max(abs(now[i] - target[i]) for i in range(3))
-    if err > REACH_TOL_MM:
-        if check:
-            raise RuntimeError(f'못 돌림 (위치 차이 {err:.1f}mm, NOT REACHABLE일 수 있음)')
-        log(f'  [경고] 돌린 뒤 위치 차이 {err:.1f}mm -> 그대로 계속')
-
-
-def rack_layer_now() -> int | None:
-    """지금 위치가 적재대 몇 층에서 잡고 들어 올린 높이인지 (적재대 쪽 +Y이고 높이가 맞을 때). 모르면 None."""
-    cur = list(get_current_posx()[0])
-    rack_y = min(x[1] for x in poses.START_POS_PICK_X.values()) - 100.0
-    if cur[1] <= rack_y:
-        return None
-    best = min(poses.START_POS_PICK_X,
-               key=lambda n: abs(cur[2] - (poses.START_POS_PICK_X[n][2] + LIFT_Z_MM)))
-    if abs(cur[2] - (poses.START_POS_PICK_X[best][2] + LIFT_Z_MM)) > poses.RACK_LAYER_Z_TOL_MM:
-        return None
-    return best
-
-
-# exit_rack이 층별 순서(RACK_EXIT_STEPS)로 뺀 끝 위치. go_sd/go_sd_align은 로봇이 아직 이 위치
-# (RACK_EXIT_KEEP_MM 이내)에 있으면 판재가 빠진 것으로 보고 적재대 안전 확인을 건너뛴다.
-_rack_exit_end: list | None = None
-RACK_EXIT_KEEP_MM = 10.0   # 이 거리(mm) 안이면 빼기 끝 위치로 봄
-
-
-def rack_exit_end_xyz(layer: int) -> list | None:
-    """layer층 빼기 순서(RACK_EXIT_STEPS)가 끝나는 위치 [X, Y, Z] (잡는 곳 + LIFT_Z_MM에서 순서대로 계산)."""
-    steps = poses.RACK_EXIT_STEPS.get(layer)
-    if not steps or layer not in poses.START_POS_PICK_X:
-        return None
-    p = list(poses.START_POS_PICK_X[layer][:3])
-    p[2] += LIFT_Z_MM
-    for kind, val in steps:
-        if kind in ('x', 'y', 'z'):
-            p['xyz'.index(kind)] += val   # ry는 위치를 안 바꿈
-    return p
-
-
-def _rack_already_exited(cur: list) -> bool:
-    """지금 위치가 층별 빼기 순서의 끝 위치인지 (방금 rackout 한 위치, 또는 계산한 끝 위치).
-
-    X, Y는 RACK_EXIT_KEEP_MM 안, Z는 끝 위치 높이 이상이면 됨 (빼고 나서 더 올린 경우도 통과).
-    """
-    ends = [_rack_exit_end] if _rack_exit_end is not None else []
-    ends += [e for e in (rack_exit_end_xyz(n) for n in poses.RACK_EXIT_STEPS) if e is not None]
-    # X, Y가 끝 위치 근처이고 높이는 끝 위치 이상(더 올렸으면 더 안전)이면 통과
-    return any(max(abs(cur[i] - e[i]) for i in range(2)) <= RACK_EXIT_KEEP_MM
-               and cur[2] >= e[2] - RACK_EXIT_KEEP_MM for e in ends)
-
-
-def exit_rack(layer: int | None = None, log=print) -> bool:
-    """(load1로 잡고 들어 올린 뒤) 적재대에서 판재 빼기.
-
-    layer가 None이면 지금 높이로 몇 층인지 알아낸다 (rack_layer_now).
-    poses.RACK_EXIT_STEPS에 그 층 순서가 있으면 그대로 실행, 없으면 기본(pull_out -> rise_to_top).
-    반환값: 층별 순서로 뺐으면 True (다음 go_sd에서 적재대 안전 확인을 건너뛰어도 됨), 기본 동작이면 False.
-    """
-    if layer is None:
-        layer = rack_layer_now()
-        if layer is None:
-            # 적재대에서 잡고 든 위치가 아니면 어디로 뺄지 모름 -> 움직이지 않고 실패
-            cur = list(get_current_posx()[0])
-            raise RuntimeError(f'적재대에서 잡고 든 위치가 아님 (지금 {[round(v, 1) for v in cur[:3]]}) -> 빼기 안 함. '
-                               f'load1 먼저 할 것')
-    steps = poses.RACK_EXIT_STEPS.get(layer)
-    if not steps:
-        log(f'[적재대 빼기] {layer}층: 기본 동작 (-X {PULL_OUT_MM:.0f}mm -> 3층 높이로 올리기)')
-        pull_out(log=log)
-        rise_to_top(log=log)
-        return False
-    log(f'[적재대 빼기] {layer}층 순서 {len(steps)}단계: {steps}')
-    for i, (kind, val) in enumerate(steps, 1):
-        log(f' {i}/{len(steps)} {kind} {val:+g}')
-        # 적재대 빼기는 도착 확인으로 멈추지 않음 (실제 로봇에서 끝 위치가 몇 mm 어긋나도 그냥 계속)
-        if kind == 'x':
-            move_rel(dx=val, log=log, check=False, vel=CARRY_VELX)
-        elif kind == 'y':
-            move_rel(dy=val, log=log, check=False, vel=CARRY_VELX)
-        elif kind == 'z':
-            move_rel(dz=val, log=log, check=False, vel=CARRY_VELX)
-        elif kind in ('rx', 'ry', 'rz'):
-            tilt_base(kind[1], val, log=log, check=False)
-        else:
-            raise ValueError(f'RACK_EXIT_STEPS 단계 종류를 모름: {kind} (x / y / z / ry)')
-    global _rack_exit_end
-    cur = list(get_current_posx()[0])
-    _rack_exit_end = cur[:3]
-    log(f'[적재대 빼기] 끝: {[round(v, 1) for v in cur]}')
-    return True
-
-
-def _check_sd_layer(layer: int) -> None:
-    if layer not in poses.SD_POS_X:
-        raise ValueError(f'SD_POS에 {layer}층 좌표 없음 (가능: {list(poses.SD_POS_X)})')
-
-
-def go_sd(layer: int = 3, log=print, force: bool = False) -> None:
-    """판재를 빼낸(pull_out) 상태에서 작업대 layer층으로 이동. 그리퍼는 그대로.
-
-    1) 작업대 3층(SD_TOP_LAYER) 위치로 movej (큰 회전이라 실측 관절값으로)
-    2) layer가 3층이 아니면 movel로 그 층 좌표까지 내려감
-
-    적재대 안전 확인(판재가 아직 적재대 안인지)은 2026-11-19 사용자 요청으로 뺐다 (다 뺐는데도 자꾸 걸려서).
-    force는 예전 호환용 (지금은 아무 효과 없음).
-    """
-    _check_sd_layer(layer)
-    cur = list(get_current_posx()[0])
-
-    top = poses.SD_TOP_LAYER
-    log(f'[작업대] 지금 {[round(v, 1) for v in cur[:3]]} -> 작업대 {top}층 {poses.SD_POS_X[top][:3]} (movej)')
-    movej(posj(*poses.SD_POS_J[top]), vel=CARRY_VELJ, acc=CARRY_ACCJ)   # 판재 든 채
-    j = list(get_current_posj())
-    err = max(abs(j[i] - poses.SD_POS_J[top][i]) for i in range(6))
-    if err > 1.0:
-        raise RuntimeError(
-            f'작업대 {top}층에 못 감: 목표 J={poses.SD_POS_J[top]} 현재 J={[round(v, 1) for v in j]}')
-
-    if layer != top and _uses_approach(layer):
-        log(f'[작업대] {layer}층은 insert에서 sd 3부터 다가가기 순서로 내려감 -> 여기서 멈춤')
-    elif layer != top:
-        log(f'[작업대] {top}층 -> {layer}층 {poses.SD_POS_X[layer][:3]} (movel 하강)')
-        _movel_checked(poses.SD_POS_X[layer], vel=CARRY_VELX)
-
-
-def go_sd_align(layer: int = 3, log=print, force: bool = False) -> None:
-    """(시험) 판재 든 채로 언로드 정렬 자세(SD_ALIGN: 언로드3 Y/자세 + sd 3 높이)로 movej. 그리퍼 그대로.
-
-    go_sd와 같은 적재대 안전 확인 (force=True면 건너뜀).
-    """
-    if layer not in poses.SD_ALIGN_J:
-        raise ValueError(f'SD_ALIGN에 {layer}층 좌표 없음 (가능: {list(poses.SD_ALIGN_J)})')
-    cur = list(get_current_posx()[0])
-    tx = poses.SD_ALIGN_X[layer]
-    log(f'[정렬] 지금 {[round(v, 1) for v in cur[:3]]} -> 언로드 정렬 {layer}층 앞 {tx[:3]} (movej)')
-    movej(posj(*poses.SD_ALIGN_J[layer]), vel=VELJ, acc=ACCJ)
-    x = list(get_current_posx()[0])
-    err = max(abs(x[i] - tx[i]) for i in range(3))
-    log(f'[정렬] 도착 X={[round(v, 2) for v in x]} (목표와 위치 차이 {err:.1f}mm)')
-    if err > REACH_TOL_MM:
-        raise RuntimeError(f'정렬 위치에 못 감 (차이 {err:.1f}mm). SD_ALIGN_J 다시 맞출 것')
-
-
-def sd_align_in(layer: int = 3, to_x: float | None = None, log=print) -> None:
-    """(시험) go_sd_align 다음: 높이, Y, 자세 그대로 +X로 똑바로 to_x까지 (기본 SD_ALIGN_DEPTH_X). 그리퍼 그대로."""
-    tx = list(poses.SD_ALIGN_X[layer])
-    tx[0] = poses.SD_ALIGN_DEPTH_X[layer] if to_x is None else float(to_x)
-    cur = list(get_current_posx()[0])
-    log(f'[정렬 넣기] X {cur[0]:.1f} -> {tx[0]:.1f} (Y {tx[1]}, Z {tx[2]} 고정, {INSERT_VELX}mm/s)')
-    movel(posx(*tx), vel=INSERT_VELX, acc=INSERT_VELX)
-    x = list(get_current_posx()[0])
-    err = max(abs(x[i] - tx[i]) for i in range(3))
-    log(f'[정렬 넣기] 도착 X={[round(v, 2) for v in x]} (목표와 차이 {err:.1f}mm)')
-    if err > REACH_TOL_MM:
-        raise RuntimeError(f'정렬 넣기 목표에 못 감 (차이 {err:.1f}mm, NOT REACHABLE일 수 있음)')
-
-
-def read_force_xyz(samples: int = FORCE_SAMPLES) -> list:
-    """베이스 기준 툴 외력 [Fx, Fy, Fz](N) 평균."""
-    total = [0.0, 0.0, 0.0]
-    for _ in range(samples):
-        f = get_tool_force(DR_BASE)
-        for i in range(3):
-            total[i] += float(f[i])
-        wait(FORCE_SAMPLE_INTERVAL)
-    return [v / samples for v in total]
-
-
-def _along(a: list, b: list, d: float) -> list:
-    """a -> b 직선 위에서 a로부터 d(mm) 떨어진 점 (자세도 같은 비율로 보간)."""
-    length = sum((b[i] - a[i]) ** 2 for i in range(3)) ** 0.5
-    t = d / length
-    return [a[i] + (b[i] - a[i]) * t for i in range(6)]
-
-
 def _tool_z_dir(ori: list) -> list:
-    """posx 자세(ZYZ 오일러, deg) -> 베이스 기준 툴 Z축 방향 단위벡터."""
+    """자세 -> 베이스 기준 툴 Z축(그리퍼가 보는 방향, 미는 축) 단위벡터."""
     a, b = math.radians(ori[0]), math.radians(ori[1])
     return [math.cos(a) * math.sin(b), math.sin(a) * math.sin(b), math.cos(b)]
 
 
-def move_tool_z(mm: float, log=print) -> None:
-    """미는 축(툴 Z축, 그리퍼가 보는 방향)으로 mm만큼 직선 이동. 자세 그대로. + = 앞(미는 쪽), - = 뒤.
-
-    기울어진 자세(ry 등)면 그 기울어진 방향 그대로 간다. INSERT_VELX로 느리게, 못 가면 예외.
-    """
-    cur = list(get_current_posx()[0])
-    z = _tool_z_dir(cur[3:6])
-    target = [cur[i] + z[i] * mm for i in range(3)] + cur[3:6]
-    log(f'  [미는 축 {mm:+.1f}mm] 방향 {[round(v, 3) for v in z]}: '
-        f'{[round(v, 1) for v in cur[:3]]} -> {[round(v, 1) for v in target[:3]]}')
-    movel(posx(*target), vel=INSERT_VELX, acc=INSERT_ACCX)
-    now = list(get_current_posx()[0])
-    err = max(abs(now[i] - target[i]) for i in range(3))
-    if err > REACH_TOL_MM:
-        raise RuntimeError(f'목표까지 못 감 (차이 {err:.1f}mm, 지금 {[round(v, 1) for v in now[:3]]}, '
-                           f'NOT REACHABLE일 수 있음)')
-    log(f'  도착: X={now[0]:.1f} Y={now[1]:.1f} Z={now[2]:.1f}')
-
-
-def align_push_axis(log=print) -> list:
-    """지금 위치에서 툴 Z축(미는 방향)을 ALIGN_VECT(+X)에 맞춤 (align_axis). 정렬된 자세 [A,B,C] 반환.
-
-    지금 툴 Z축과 ALIGN_VECT의 각도가 ALIGN_MAX_DEG보다 크면 (축을 잘못 골랐거나 자세가 이상)
-    크게 돌아갈 수 있으므로 움직이지 않고 예외.
-    """
-    cur = list(get_current_posx()[0])
-    z = _tool_z_dir(cur[3:6])
-    n = math.sqrt(sum(v * v for v in ALIGN_VECT))
-    cosang = sum(z[i] * ALIGN_VECT[i] for i in range(3)) / n
-    ang = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
-    log(f'[축정렬] 지금 툴 Z축 {[round(v, 3) for v in z]}, 미는 방향 {ALIGN_VECT}과 {ang:.1f}도 차이')
-    if ang > ALIGN_MAX_DEG:
-        raise RuntimeError(f'축정렬 각도가 너무 큼 ({ang:.1f}도 > {ALIGN_MAX_DEG}도) -> 정렬 안 하고 멈춤')
-    align_axis(vect=list(ALIGN_VECT), pos=posx(*cur), axis=DR_AXIS_Z, ref=DR_BASE)
-    new = list(get_current_posx()[0])
-    log(f'[축정렬] 자세 {[round(v, 2) for v in cur[3:6]]} -> {[round(v, 2) for v in new[3:6]]}, '
-        f'위치 {[round(v, 1) for v in new[:3]]}')
-    return new[3:6]
-
-
-def _insert_move(pose_x: list, base: list, log, label: str,
-                 vel: float = INSERT_VELX, acc: float = INSERT_ACCX,
-                 jam: float = JAM_FORCE_N, samples: int = FORCE_SAMPLES) -> None:
-    """느린 movel + 이동 후 X/Y 힘 변화 확인. jam(N) 이상이면 걸린 것으로 보고 멈춤 (놓지 않음)."""
-    movel(posx(*pose_x), vel=vel, acc=acc)
-    f = read_force_xyz(samples)
-    dfx, dfy = f[0] - base[0], f[1] - base[1]
-    log(f'  [{label}] X={pose_x[0]:.1f} Y={pose_x[1]:.1f}  dFx={dfx:+.1f}N dFy={dfy:+.1f}N')
-    if max(abs(dfx), abs(dfy)) >= jam:
-        raise RuntimeError(f'넣다가 걸림 ({label}: dFx={dfx:+.1f}N dFy={dfy:+.1f}N, '
-                           f'기준 {jam}N) -> 멈춤, 그리퍼는 잡은 상태')
-
-
-def _uses_approach(layer: int) -> bool:
-    """이 층은 sd 3에서 다가가기 순서(SD_INSERT_APPROACH)로 입구까지 가는지."""
-    return layer in getattr(poses, 'SD_INSERT_APPROACH', {})
-
-
-def _approach_points(layer: int) -> list:
-    """sd 3 위치(SD_POS_X[3])에서 SD_INSERT_APPROACH[layer] 순서대로 간 점들 (마지막 = 입구).
-
-    자세는 sd 3 자세에서 시작, 'rx'/'ry'/'rz' 단계에서만 바뀜 (그 뒤 fwd는 바뀐 그리퍼 방향).
-    """
-    p = list(poses.SD_POS_X[poses.SD_TOP_LAYER])
-    pts = []
-    for kind, val in poses.SD_INSERT_APPROACH[layer]:
-        if kind == 'fwd':
-            d = _tool_z_dir(p[3:6])
-            for i in range(3):
-                p[i] += d[i] * val
-        elif kind in ('x', 'y', 'z'):
-            p['xyz'.index(kind)] += val
-        elif kind in ('rx', 'ry', 'rz'):
-            p = p[:3] + rotate_about_base(kind[1], p[3:6], val)
-        else:
-            raise ValueError(f'SD_INSERT_APPROACH 단계 종류를 모름: {kind} (fwd / x / y / z / rx / ry / rz)')
-        pts.append(list(p))
-    return pts
-
-
-KEEP_Z_STIFF_N_M = 20000.0   # SD_INSERT_KEEP_Z 층: 밀 때 Z(위아래) 강성 (N/m, 순응 제어 최대값) -> 높이 고정
-ALIGN_JOINT_TOL_DEG = 2.0   # 정렬 자세에서 관절값이 실측과 이만큼 넘게 다르면 movej로 맞춤
-ALIGN_VELJ = 5.0            # 그때 movej 속도 (도/s, 프린터 안이라 아주 느리게)
-
-
-def _keep_z(layer: int) -> bool:
-    return bool(getattr(poses, 'SD_INSERT_KEEP_Z', {}).get(layer))
-
-
-def _push_dir(layer: int, ori: list) -> list:
-    """미는 방향 단위벡터. SD_INSERT_KEEP_Z 층은 미는 축을 수평(XY)으로 눕힌 방향 (높이 유지)."""
-    d = _tool_z_dir(ori)
-    if _keep_z(layer):
-        n = math.hypot(d[0], d[1])
-        d = [d[0] / n, d[1] / n, 0.0]
-    return d
-
-
-def _align_target(layer: int) -> list:
-    """정렬 이동 목표: SD_INSERT_ALIGN_X에서 미는 방향으로 SD_INSERT_ALIGN_BACK_MM 앞 (자세는 그대로).
-    SD_INSERT_KEEP_Z 층은 Z를 다가가기 끝 높이로."""
-    tx = list(poses.SD_INSERT_ALIGN_X[layer])
-    back = getattr(poses, 'SD_INSERT_ALIGN_BACK_MM', {}).get(layer, 0.0)
-    d = _push_dir(layer, tx[3:6])
-    t = [tx[i] - d[i] * back for i in range(3)] + tx[3:6]
-    if _keep_z(layer):
-        end = _approach_points(layer)[-1]
-        t[2] = end[2]
-        # 앞뒤 기울기(피치)도 다가가기 끝 그대로: 측정 자세를 베이스 Y축으로 돌려 미는 축의 위아래 각도를 맞춤
-        # (그리퍼가 앞으로 숙여지면 판재 앞 끝이 내려가면서 밀리므로)
-        def pitch(ori):
-            z = _tool_z_dir(ori)
-            return math.degrees(math.atan2(z[2], math.hypot(z[0], z[1])))   # + = 위로 들림
-        t = t[:3] + rotate_about_base('y', t[3:6], pitch(t[3:6]) - pitch(end[3:6]))
-    return t
-
-
-def _pre_push_points(layer: int) -> list:
-    """정렬 위치에서 SD_INSERT_PRE_PUSH_STEPS 순서대로 간 점들 (마지막 = 힘제어 시작점). 없으면 []."""
-    p = _align_target(layer)
-    pts = []
-    for kind, val in getattr(poses, 'SD_INSERT_PRE_PUSH_STEPS', {}).get(layer, []):
-        if kind in ('x', 'y', 'z'):
-            p = list(p)
-            p['xyz'.index(kind)] += val
-        elif kind in ('rx', 'ry', 'rz'):
-            p = p[:3] + rotate_about_base(kind[1], p[3:6], val)
-        else:
-            raise ValueError(f'SD_INSERT_PRE_PUSH_STEPS 단계 종류를 모름: {kind} (x / y / z / rx / ry / rz)')
-        pts.append(list(p))
-    return pts
-
-
-def _push_start(layer: int) -> list:
-    """힘제어 시작점 = 정렬 위치 + SD_INSERT_PRE_PUSH_STEPS."""
-    pts = _pre_push_points(layer)
-    return pts[-1] if pts else _align_target(layer)
-
-
-def _align_shape(layer: int, log=print) -> None:
-    """(넣은 뒤) 정렬 목표(_align_target)로 천천히 직선 이동.
-    끝 앞에서 멈추지 않는 층(SD_INSERT_ALIGN_BACK_MM 없음)만 관절값이 SD_INSERT_ALIGN_J와
-    ALIGN_JOINT_TOL_DEG 넘게 다르면 그 관절값으로 아주 느리게 movej (로봇 모양까지 맞춤)."""
-    tx = _align_target(layer)
-    log(f'[넣기] 정렬 자세로 이동 {[round(v, 1) for v in tx[:3]]} 자세 {[round(v, 2) for v in tx[3:6]]} (천천히)')
-    _movel_slow(tx, '정렬 자세', rotate=True)
-    tj = poses.SD_INSERT_ALIGN_J.get(layer)
-    if tj is None or getattr(poses, 'SD_INSERT_ALIGN_BACK_MM', {}).get(layer):
-        return   # 끝 앞에서 멈추는 경우 SD_INSERT_ALIGN_J(끝 관절값)로 맞추면 끝까지 가버려서 안 함
-    j = list(get_current_posj())
-    err = max(abs(j[i] - tj[i]) for i in range(6))
-    log(f'[넣기] 로봇 모양 확인: 관절 차이 최대 {err:.2f}도 (기준 {ALIGN_JOINT_TOL_DEG}도) 지금 J={[round(v, 2) for v in j]}')
-    if err > ALIGN_JOINT_TOL_DEG:
-        log(f'[넣기] 관절값으로 맞춤 movej {tj} ({ALIGN_VELJ}도/s)')
-        movej(posj(*tj), vel=ALIGN_VELJ, acc=ALIGN_VELJ)
-        wait(ROT_WAIT_SEC)
-
-
-def _push_only(layer: int) -> bool:
-    """끝 좌표 없이 입구부터 순응 제어로 밀며 반력만으로 완료 판단하는 층인지 (SD_INSERT_PUSH_MM)."""
-    return (layer not in poses.SD_INSERT_DONE_X and layer not in getattr(poses, 'SD_INSERT_FWD_MM', {})
-            and layer in getattr(poses, 'SD_INSERT_PUSH_MM', {}))   # 정렬 자세(SD_INSERT_ALIGN_X) 층도 여기 해당
-
-
-def _movel_slow(target: list, name: str, rotate: bool = False) -> None:
-    """INSERT_VELX로 movel 후 도착 확인 (못 가면 예외).
-
-    rotate=True(자세만 돌리는 단계)면 회전 ROT_VELX_DEG로 천천히, 끝나고 ROT_WAIT_SEC 멈춤.
-    """
-    if rotate:
-        movel(posx(*target), vel=[INSERT_VELX, ROT_VELX_DEG], acc=[INSERT_ACCX, ROT_ACCX_DEG])
-    else:
-        movel(posx(*target), vel=INSERT_VELX, acc=INSERT_ACCX)
-    now = list(get_current_posx()[0])
-    err = max(abs(now[i] - target[i]) for i in range(3))
-    if err > REACH_TOL_MM:
-        raise RuntimeError(f'{name}까지 못 감: 목표={[round(v, 1) for v in target[:3]]} '
-                           f'현재={[round(v, 1) for v in now[:3]]}')
-    if rotate:
-        wait(ROT_WAIT_SEC)
-
-
-def _uses_align(layer: int) -> bool:
-    """이 층은 언로드 정렬 방식(SD_ALIGN)으로 넣는지."""
-    return layer in getattr(poses, 'SD_ALIGN_INSERT_LAYERS', ())
-
-
-def _insert_pre(layer: int) -> list:
-    """넣기 첫 점 (여기서 PRE_INSERT_HOLD_SEC 멈춤). 정렬 방식이면 정렬 앞 = 입구, 다가가기 방식이면 입구."""
-    if _uses_approach(layer):
-        return _approach_points(layer)[-1]
-    return list(poses.SD_ALIGN_X[layer] if _uses_align(layer) else poses.SD_PRE_INSERT_X[layer])
-
-
-def _insert_line(layer: int) -> tuple[list, list, list, float]:
-    """넣는 직선 (입구, 끝, 방향 단위벡터, 길이mm).
-
-    정렬 방식 층(SD_ALIGN_INSERT_LAYERS): 입구 = SD_ALIGN_X, 끝 = 입구에서 X만 SD_ALIGN_DEPTH_X (높이/자세 그대로).
-    그 외(3층): 입구 = SD_INSERT_FRONT, 끝 = SD_INSERT_DONE.
-    """
-    if _uses_approach(layer) and layer in getattr(poses, 'SD_INSERT_ALIGN_X', {}):
-        # 실측 정렬 자세(끝)에서 미는 축으로 SD_INSERT_ALIGN_BACK_MM 앞이 입구,
-        # 입구에서 SD_INSERT_PUSH_MM 앞까지 순응 제어로만 밀기
-        front = _push_start(layer)
-        d = _push_dir(layer, front[3:6])
-        done = [front[i] + d[i] * poses.SD_INSERT_PUSH_MM[layer] for i in range(3)] + front[3:6]
-    elif _uses_approach(layer):
-        front = _approach_points(layer)[-1]
-        fwd_mm = getattr(poses, 'SD_INSERT_FWD_MM', {}).get(layer)
-        if fwd_mm is not None:
-            d = _tool_z_dir(front[3:6])
-            done = [front[i] + d[i] * fwd_mm for i in range(3)] + front[3:6]
-        elif layer in poses.SD_INSERT_DONE_X:
-            done = list(poses.SD_INSERT_DONE_X[layer])
-        elif _push_only(layer):
-            d = _push_dir(layer, front[3:6])   # SD_INSERT_KEEP_Z 층은 수평 (높이 유지)
-            done = [front[i] + d[i] * poses.SD_INSERT_PUSH_MM[layer] for i in range(3)] + front[3:6]
-        else:
-            raise ValueError(f'{layer}층: SD_INSERT_DONE_X도 SD_INSERT_PUSH_MM도 없음')
-    elif _uses_align(layer):
-        for table, name in ((poses.SD_ALIGN_X, 'SD_ALIGN_X'), (poses.SD_ALIGN_J, 'SD_ALIGN_J'),
-                            (poses.SD_ALIGN_DEPTH_X, 'SD_ALIGN_DEPTH_X')):
-            if layer not in table:
-                raise ValueError(f'{name}에 {layer}층 좌표 없음 (가능: {list(table)})')
-        front = list(poses.SD_ALIGN_X[layer])
-        done = list(front)
-        done[0] = float(poses.SD_ALIGN_DEPTH_X[layer])
-    else:
-        for table, name in ((poses.SD_PRE_INSERT_X, 'SD_PRE_INSERT'),
-                            (poses.SD_INSERT_FRONT_X, 'SD_INSERT_FRONT'),
-                            (poses.SD_INSERT_DONE_X, 'SD_INSERT_DONE')):
-            if layer not in table:
-                raise ValueError(f'{name}에 {layer}층 좌표 없음 (가능: {list(table)})')
-        front = list(poses.SD_INSERT_FRONT_X[layer])
-        done = list(poses.SD_INSERT_DONE_X[layer])
-    vec = [done[i] - front[i] for i in range(3)]
-    length = math.sqrt(sum(v * v for v in vec))
-    return front, done, [v / length for v in vec], length
-
-
 def _point_on_line(front: list, done: list, d: float) -> list:
-    """입구에서 직선 따라 d(mm) 간 점. 자세는 입구~끝 비율로 보간, 끝을 넘으면 끝 자세."""
-    length = math.sqrt(sum((done[i] - front[i]) ** 2 for i in range(3)))
-    t = d / length
-    p = [front[i] + (done[i] - front[i]) * t for i in range(3)]
+    """front -> done 직선에서 d(mm) 간 점. 자세는 비율로 보간 (끝을 넘으면 끝 자세)."""
+    t = d / _dist(front, done)
     tt = min(max(t, 0.0), 1.0)
-    return p + [front[i] + (done[i] - front[i]) * tt for i in range(3, 6)]
+    return [front[i] + (done[i] - front[i]) * t for i in range(3)] + \
+        [front[i] + (done[i] - front[i]) * tt for i in range(3, 6)]
 
 
-def _wiggle_side(center: list, side: int, base: list, log, label: str) -> None:
-    """center에서 side(+1 좌 / -1 우) 방향으로 WIGGLE_Y_STEP_MM씩 최대 WIGGLE_Y_MM까지 가며 Fy 확인.
+# ============================================================================
+# PART 2. Load - 적재대에서 판재 꺼내 작업대(sd)에 넣기
+# ============================================================================
 
-    옆 힘 변화 >= WIGGLE_CONTACT_N 이면 거기서 멈추고, 반대 방향으로 WIGGLE_BACKOFF_MM씩
-    힘이 풀릴 때까지 물러난다 (최대 WIGGLE_BACKOFF_MAX_MM, 그래도 안 풀리면 예외).
-    앞(X) 힘 변화가 JAM_FORCE_N 넘으면 예외 (잡은 채로 멈춤).
+# ---- 2-1. 액션 진입점
+def run_load1(goal: Load1.Goal, log=print) -> bool:
+    """Load1: 홈 -> 적재대 start_pos_id층 잡기 -> 판재 확인.
+
+    True: 들어 올린 채로 멈춤 (다음 Load2가 여기서 시작) / False: 판재 내려놓고 홈.
     """
-    name = '좌' if side > 0 else '우'
-
-    def go(off: float) -> tuple[float, float]:
-        q = list(center)
-        q[1] += side * off
-        movel(posx(*q), vel=INSERT_VELX, acc=INSERT_ACCX)
-        f = read_force_xyz(WIGGLE_FORCE_SAMPLES)
-        dfx, dfy = f[0] - base[0], f[1] - base[1]
-        if abs(dfx) >= JAM_FORCE_N:
-            raise RuntimeError(f'넣다가 앞이 걸림 ({label} {name} {off:.1f}mm: dFx={dfx:+.1f}N, '
-                               f'기준 {JAM_FORCE_N}N) -> 멈춤, 그리퍼는 잡은 상태')
-        return dfx, dfy
-
-    off = 0.0
-    while off < WIGGLE_Y_MM - 1e-9:
-        off = min(off + WIGGLE_Y_STEP_MM, WIGGLE_Y_MM)
-        dfx, dfy = go(off)
-        if abs(dfy) >= WIGGLE_CONTACT_N:
-            log(f'  [{label} {name}] {off:.1f}mm에서 옆에 닿음 dFy={dfy:+.1f}N -> 반대로 '
-                f'{WIGGLE_BACKOFF_MM}mm씩 물러나기')
-            backed = 0.0
-            first_sign = 1.0 if dfy > 0 else -1.0
-            while abs(dfy) >= WIGGLE_CONTACT_N:
-                if backed >= WIGGLE_BACKOFF_MAX_MM - 1e-9:
-                    where = ('반대쪽 옆에 닿음 (물러난 거리가 가이드 폭보다 큼)'
-                             if dfy * first_sign < 0 else '옆 힘이 안 풀림')
-                    raise RuntimeError(f'{label} {name}: {backed:.1f}mm 물러났는데 {where} '
-                                       f'(옆 {side * off:+.1f}mm, dFy={dfy:+.1f}N) -> 멈춤, 그리퍼는 잡은 상태')
-                backed += WIGGLE_BACKOFF_MM
-                off -= WIGGLE_BACKOFF_MM
-                dfx, dfy = go(off)
-            log(f'  [{label} {name}] {backed:.1f}mm 물러나서 힘 풀림 (옆 {side * off:+.1f}mm, dFy={dfy:+.1f}N)')
-            return
-    log(f'  [{label} {name}] {WIGGLE_Y_MM:.1f}mm까지 안 닿음 (dFy={dfy:+.1f}N)')
+    return _load1_common(goal, 'load1', log=log)
 
 
-def approach_sd(layer: int, log=print, skip_last: bool = False) -> None:
-    """sd 3 위치 -> SD_INSERT_APPROACH[layer] 순서대로 다가가기 끝까지 (넣기 전 멈춤). 그리퍼 그대로.
+def run_load(goal: Load.Goal, log=print) -> bool:
+    """Load: run_load1과 같음."""
+    return _load1_common(goal, 'load', log=log)
 
-    insert_sd의 앞부분과 같다 (motion_test enter 명령에서 따로 씀). 이어지는 회전 단계는 한 번에 돌림.
+
+def run_load2(goal: Load2.Goal, log=print) -> bool:
+    """Load2: (Load1로 든 상태) 적재대 빼기 -> 작업대 sd_pos_id층 이동 -> 넣기 -> 빼기 -> 홈.
+
+    반환값은 넣기 완료 확인 여부 (실패해도 그리퍼는 열고 홈으로 간다).
     """
-    if not _uses_approach(layer):
-        raise ValueError(f'{layer}층은 다가가기 순서(SD_INSERT_APPROACH)가 없음 (가능: {list(poses.SD_INSERT_APPROACH)})')
-    pts = _approach_points(layer)
-    log(f'[넣기] {layer}층: sd 3에서 다가가기 {poses.SD_INSERT_APPROACH[layer]}')
-    _movel_slow(poses.SD_POS_X[poses.SD_TOP_LAYER], 'sd 3')
-    steps = poses.SD_INSERT_APPROACH[layer]
-    rot = ('rx', 'ry', 'rz')
-    for i, ((kind, val), pt) in enumerate(zip(steps, pts), 1):
-        if skip_last and i == len(steps):
-            break   # 마지막 단계는 부르는 쪽(_check_force_and_release)이 힘 재면서 직접 함
-        if kind in rot and i < len(steps) and steps[i][0] in rot:
-            log(f'  {i}/{len(pts)} {kind} {val:+g} (다음 회전과 같이)')
-            continue   # 이어지는 회전 단계는 모아서 마지막 점으로 한 번에 돌림
-        log(f'  {i}/{len(pts)} {kind} {val:+g} -> {[round(v, 1) for v in pt[:3]]}'
-            + (f' 자세 {[round(v, 2) for v in pt[3:6]]}' if kind in rot else ''))
-        _movel_slow(pt, f'다가가기 {i}단계', rotate=kind in rot)
-
-
-CHECK_STEP_MM = 5.0   # SD_INSERT_CHECK_ONLY 층: 마지막 fwd를 이만큼씩 나눠 가며 매번 힘 확인
-
-
-def _check_force_and_release(layer: int, log=print) -> bool:
-    """(SD_INSERT_CHECK_ONLY 층) 다가가기 마지막 단계(fwd)를 두 구간으로:
-    처음 SD_INSERT_CHECK_FROM_MM은 위치 제어로 한 번에 -> 나머지는 순응 제어 켜고 CHECK_STEP_MM씩 밀며
-    매번 미는 방향 반력 확인, >= SD_DONE_REACT_N이면 그 자리에서 멈춤. 끝까지 가도 안 받으면 그대로.
-    순응 해제 후 항상 그리퍼 열기. 항상 True (반력은 로그로만)."""
-    approach_sd(layer, log=log, skip_last=True)
-    steps, pts = poses.SD_INSERT_APPROACH[layer], _approach_points(layer)
-    start, last = pts[-2], pts[-1]
-    kind, val = steps[-1]
-    total = math.sqrt(sum((last[i] - start[i]) ** 2 for i in range(3)))
-    u = _push_dir(layer, last[3:6])
-    react_n = getattr(poses, 'SD_DONE_REACT_N', {}).get(layer, DONE_REACT_N)
-    free = min(getattr(poses, 'SD_INSERT_CHECK_FROM_MM', {}).get(layer, 0.0), total)
-
-    def at(d: float) -> list:
-        t = d / total
-        return [start[i] + (last[i] - start[i]) * t for i in range(6)]
-
-    log(f'  {len(steps)}/{len(steps)} {kind} {val:+g} -> {[round(v, 1) for v in last[:3]]} '
-        f'(처음 {free:.0f}mm 위치 제어, 나머지 {total - free:.0f}mm 순응 제어 {CHECK_STEP_MM:.0f}mm씩, '
-        f'반력 > {react_n}N이면 멈추고 놓기)')
-    d = 0.0
-    if free > 0:
-        movel(posx(*at(free)), vel=INSERT_VELX, acc=INSERT_ACCX)
-        d = free
-        log(f'  [밀기 {d:.0f}/{total:.0f}mm] 위치 제어로 이동')
-    wait(SETTLE_SEC)
-    base = read_force_xyz()
-    stx = list(COMPLIANCE_STX)
-    stx[0] = PUSH_FORCE_N / (PUSH_OVERSHOOT_MM / 1000.0)
-    if _keep_z(layer):
-        stx[2] = KEEP_Z_STIFF_N_M   # 높이 고정
-    log(f'[넣기] 순응 제어 켜기: 강성 {[round(v) for v in stx[:3]]}N/m')
-    got = False
-    task_compliance_ctrl(stx=stx)
-    try:
-        wait(0.3)
-        while d < total - 1e-9:
-            d = min(d + CHECK_STEP_MM, total)
-            movel(posx(*at(d)), vel=PUSH_VELX, acc=PUSH_ACCX)
-            f = read_force_xyz(PUSH_FORCE_SAMPLES)
-            react = -sum((f[i] - base[i]) * u[i] for i in range(3))
-            got = react > react_n   # 기준 초과 (0N이면 양수가 되는 순간)
-            log(f'  [순응 밀기 {d:.0f}/{total:.0f}mm] 반력 {react:+.2f}N (기준 > {react_n}N)'
-                f'{" -> 받음, 멈추고 놓기" if got else ""}')
-            if got:
-                break
-    finally:
-        release_compliance_ctrl()   # 그리퍼 열기 전에 순응 해제 (손목 튐 방지)
-    if not got:
-        log(f'[넣기] {total:.0f}mm 끝까지 밀었는데 반력 {react_n}N 안 받음 -> 그대로 놓음')
-    grip_open()
-    log('[넣기] 그리퍼 열기 (판재 놓음)')
-    return True
-
-
-def insert_sd(layer: int = 3, log=print, keep_ori: bool = False, from_entrance: bool = False) -> bool:
-    """작업대 layer층에 판재를 넣고, 끝 위치 + 반력이 맞으면 놓기. 자세는 측정값 그대로.
-
-    0) SD_PRE_INSERT (sd 다음 첫 점)로 movel -> PRE_INSERT_HOLD_SEC(3초) 멈춤
-    1) 입구(SD_INSERT_FRONT)로 movel
-    2) WIGGLE_ENABLE이면 처음 WIGGLE_DEPTH_MM 동안 좌우(Y)로 흔들기 (지금은 False -> 안 함)
-    3) 입구 -> 끝(SD_INSERT_DONE) 직선으로, 끝 PUSH_START_BEFORE_MM 앞까지 넣기
-    4) 순응 제어 켜고(X 강성 = PUSH_FORCE_N / PUSH_OVERSHOOT_MM) 같은 직선 방향으로 PUSH_STEP_MM씩
-       (끝 + PUSH_OVERSHOOT_MM까지) 밀며 매번 확인
-       - 위치 도착 (직선 진행 >= 길이 - DONE_POS_TOL_MM) 그리고
-         힘 맞음 (미는 방향 반력 >= DONE_REACT_N)
-         -> 넣기 완료 -> 순응 해제(그 자리 고정) -> 그리퍼 열기 -> True
-       - 끝까지 밀어도 완료 아님 -> 순응 해제 -> 그래도 그리퍼 열기 -> False
-    SD_INSERT_APPROACH 층(지금 1, 2층)은 0)~1) 대신 sd 3에서 다가가기 순서대로 입구까지 가고,
-    3)~4)는 입구 -> SD_INSERT_DONE_X[층] 직선 (3층과 같은 순응 밀기/놓기).
-    끝 좌표 없는 층(SD_INSERT_PUSH_MM, 지금 1층)은 입구부터 바로 순응 제어로 미는 축 방향 최대 그 mm까지
-    밀며 반력 >= DONE_REACT_N이면 완료.
-    SD_ALIGN_INSERT_LAYERS 층(지금 없음)은 0)~1) 대신 수평 정렬 앞(SD_ALIGN)으로 movej하고,
-    3)~4)의 직선은 높이/자세 그대로 +X (끝 = SD_ALIGN_DEPTH_X). 목록에 없는 층만 위 예전 방식.
-    keep_ori는 예전 호환용 (지금은 측정 자세를 쓰므로 무시).
-    위치 이동 중 힘이 JAM_FORCE_N 넘으면 예외 (잡은 채로 멈춤).
-    """
-    if getattr(poses, 'SD_INSERT_CHECK_ONLY', {}).get(layer):
-        if from_entrance:
-            raise ValueError(f'{layer}층은 마지막 fwd에서 힘을 확인하는 방식이라 입구부터 넣기(inpush)를 못 씀 -> insert {layer}')
-        return _check_force_and_release(layer, log=log)
-    front, done, u, length = _insert_line(layer)
-    pre = _insert_pre(layer)
-    log(f'[넣기] 첫 점 {[round(v, 1) for v in pre[:3]]} -> 입구 {[round(v, 1) for v in front[:3]]} -> 끝 {[round(v, 1) for v in done[:3]]} '
-        f'(직선 {length:.1f}mm, 방향 {[round(v, 3) for v in u]})')
-    if keep_ori:
-        log('[넣기] (sd 축정렬 자세 대신 측정한 자세를 씀)')
-
-    if from_entrance:
-        # (motion_test inpush) 이미 enter로 다가가기 끝(입구)에 와 있음 -> 다가가기 건너뜀
-        cur = list(get_current_posx()[0])
-        err = max(abs(cur[i] - pre[i]) for i in range(3))
-        log(f'[넣기] 입구부터 넣기: 지금 {[round(v, 1) for v in cur[:3]]} (입구와 차이 {err:.1f}mm)')
-        if err > 20.0:
-            raise RuntimeError(f'입구에서 너무 멂 (차이 {err:.1f}mm). enter {layer} 먼저 할 것')
-    elif _uses_approach(layer):
-        approach_sd(layer, log=log)   # sd 3에서 다가가기 순서대로 (마지막 점 = 입구 전 대기 위치)
-    elif _uses_align(layer):
-        # 언로드 정렬 방식: 정렬 앞(= 입구)으로 movej (계산한 관절값) 후 위치 확인
-        log(f'[넣기] {layer}층 언로드 정렬 방식: 정렬 앞 {pre[:3]} (movej) -> +X로 똑바로 {done[0]:.1f}까지')
-        movej(posj(*poses.SD_ALIGN_J[layer]), vel=VELJ, acc=ACCJ)
-        now = list(get_current_posx()[0])
-        err = max(abs(now[i] - pre[i]) for i in range(3))
-        if err > REACH_TOL_MM:
-            raise RuntimeError(f'정렬 앞에 못 감 (차이 {err:.1f}mm, 지금 {[round(v, 1) for v in now[:3]]}). '
-                               f'SD_ALIGN_J 다시 맞출 것')
-    else:
-        _movel_checked(pre, vel=INSERT_VELX)
-    log(f'[넣기] {PRE_INSERT_HOLD_SEC}초 멈춤')
-    wait(PRE_INSERT_HOLD_SEC)
-    log(f'[넣기] 입구 {[round(v, 1) for v in front[:3]]} 자세 {[round(v, 2) for v in front[3:6]]}')
-    if layer in getattr(poses, 'SD_INSERT_ALIGN_X', {}):
-        _align_shape(layer, log)   # 실측 정렬 자세로 이동 + 로봇 모양(관절값) 맞추기
-        steps = getattr(poses, 'SD_INSERT_PRE_PUSH_STEPS', {}).get(layer, [])
-        for (kind, val), pt in zip(steps, _pre_push_points(layer)):   # 힘제어 전 마지막 맞추기
-            log(f'[넣기] 힘제어 전 {kind} {val:+g} -> {[round(v, 1) for v in pt[:3]]} 자세 {[round(v, 2) for v in pt[3:6]]}')
-            _movel_slow(pt, f'힘제어 전 {kind}', rotate=kind in ('rx', 'ry', 'rz'))
-    else:
-        _movel_checked(front, vel=INSERT_VELX)
-    wait(SETTLE_SEC)
-    base = read_force_xyz()
-    log(f'[넣기] 기준 힘 Fx={base[0]:.1f} Fy={base[1]:.1f} Fz={base[2]:.1f}N')
-
-    # 2) 좌우로 흔들며 정렬 (WIGGLE_ENABLE일 때만)
-    d = 0.0
-    if not WIGGLE_ENABLE:
-        log('[넣기] 좌우 흔들기 안 함 -> 바로 일자로 넣기')
-    while WIGGLE_ENABLE and d < WIGGLE_DEPTH_MM:
-        d = min(d + WIGGLE_STEP_MM, WIGGLE_DEPTH_MM)
-        p = _point_on_line(front, done, d)
-        _insert_move(p, base, log, f'정렬 {d:.0f}mm 가운데')
-        for side in (+1, -1):
-            _wiggle_side(p, side, base, log, f'정렬 {d:.0f}mm')
-        _insert_move(p, base, log, f'정렬 {d:.0f}mm 가운데')
-
-    # 3) 직선으로 끝 PUSH_START_BEFORE_MM 앞까지
-    push_only = _push_only(layer)
-    if push_only:
-        # 끝 좌표 없음: 입구부터 바로 순응 제어로 최대 length(SD_INSERT_PUSH_MM)까지, 반력만으로 완료
-        s0, s_max = 0.0, length
-    else:
-        s0 = length - getattr(poses, 'SD_PUSH_START_BEFORE_MM', {}).get(layer, PUSH_START_BEFORE_MM)
-        _insert_move(_point_on_line(front, done, s0), base, log, '일자로 넣기',
-                     vel=STRAIGHT_VELX, acc=STRAIGHT_ACCX)
-        s_max = length + getattr(poses, 'SD_PUSH_OVERSHOOT_MM', {}).get(layer, PUSH_OVERSHOOT_MM)
-
-    # 4) 순응 제어로 같은 직선 방향으로 밀면서 끝 위치 + 반력 확인
-    wait(SETTLE_SEC)
-    base = read_force_xyz()
-    react_n = getattr(poses, 'SD_DONE_REACT_N', {}).get(layer, DONE_REACT_N)   # 층별 반력 기준
-    cond = (f'반력 >= {react_n}N (끝 좌표 없음, 위치 조건 없음)' if push_only
-            else f'진행 >= {length - DONE_POS_TOL_MM:.1f}mm 그리고 반력 > {react_n}N')
-    log(f'[넣기] 순응 제어로 밀기: 직선 {s0:.1f} -> 최대 {s_max:.1f}mm, {PUSH_STEP_MM:.0f}mm씩 (완료: {cond})')
-    # X 강성: 끝에 막힌 채 목표가 끝 + PUSH_OVERSHOOT_MM이면 PUSH_FORCE_N으로 누르게
-    stx = list(COMPLIANCE_STX)
-    stx[0] = PUSH_FORCE_N / (PUSH_OVERSHOOT_MM / 1000.0)
-    log(f'[넣기] 순응 강성 X {stx[0]:.0f}N/m ({stx[0] / 1000:.2f}N/mm, 끝 +{PUSH_OVERSHOOT_MM:.0f}mm에서 약 {PUSH_FORCE_N}N)')
-    finished = False
-    max_react, max_at, last_f = -1e9, 0.0, [0.0, 0.0, 0.0]   # 힘 요약용
-    if _keep_z(layer):
-        # 높이 고정: Z(위아래)는 최대 강성 -> 밀 때 내려앉지 않게 (순응 기준 좌표계는 DSR 기본값 DR_BASE)
-        stx[2] = KEEP_Z_STIFF_N_M
-        log(f'[넣기] 높이 고정 순응 제어: 강성 {[round(v) for v in stx[:3]]}N/m (X만 무름, Z 고정)')
-    task_compliance_ctrl(stx=stx)
-    try:
-        wait(0.3)
-        st = s0
-        while st < s_max - 1e-9:
-            st = min(st + PUSH_STEP_MM, s_max)
-            movel(posx(*_point_on_line(front, done, st)), vel=PUSH_VELX, acc=PUSH_ACCX)
-            f = read_force_xyz(PUSH_FORCE_SAMPLES)
-            cur = list(get_current_posx()[0])
-            s_now = sum((cur[i] - front[i]) * u[i] for i in range(3))   # 직선 위 진행 거리
-            lag = st - s_now
-            react = -sum((f[i] - base[i]) * u[i] for i in range(3))     # 미는 방향 반력 (+ = 밀림)
-            last_f = [f[i] - base[i] for i in range(3)]
-            if react > max_react:
-                max_react, max_at = react, st
-            reached = push_only or s_now >= length - DONE_POS_TOL_MM
-            force_ok = react > react_n   # 기준 초과 (기준 0N이면 반력이 양수가 되는 순간)
-            msg = (f'  [밀기 {st:.1f}mm] 진행 {s_now:.1f}mm (끝까지 {length - s_now:+.1f}mm, 덜 감 {lag:.1f}mm) '
-                   f'반력 {react:+.2f}N  Fx={f[0]:+.2f} Fy={f[1]:+.2f} Fz={f[2]:+.2f}  '
-                   f'위치{"O" if reached else "X"} 힘{"O" if force_ok else "X"}')
-            if reached and force_ok:
-                log(msg + '  -> 넣기 완료')
-                finished = True
-                break
-            log(msg)
-        else:
-            log('[넣기] 끝까지 밀었는데 완료 아님')
-    finally:
-        # 순응 해제 = 지금 위치에서 위치 제어로 고정. 이걸 먼저 해야 그리퍼를 열었을 때
-        # 눌려 있던 스프링 힘 때문에 손목이 앞으로 튀어 나가지 않는다.
-        release_compliance_ctrl()
-    log(f'[넣기] 힘 요약: 최대 반력 {max_react:+.2f}N ({max_at:.0f}mm에서), 마지막 힘 변화 '
-        f'dFx={last_f[0]:+.2f} dFy={last_f[1]:+.2f} dFz={last_f[2]:+.2f}N (기준 반력 {react_n}N)')
-    # 밀기가 끝나면 완료 여부와 상관없이 항상 그리퍼 열기 (순응 해제 뒤)
-    grip_open()
-    if finished:
-        log('[넣기] 그리퍼 열기 (판재 놓음)')
-    else:
-        log('[넣기] 완료 확인은 안 됐지만 그리퍼 열기 (판재 놓음) -> 결과 False')
-    return finished
-
-
-def _quick_retreat(layer: int, log=print) -> None:
-    """poses.SD_RETREAT_STEPS[layer] 순서로 빼기 (넣은 길 전체를 거꾸로 가지 않음). 그리퍼는 그대로.
-
-    단계: ('x'/'y'/'z', mm) 지금 자세 그대로 직선 / ('entrance', 0) 넣은 직선 따라 입구까지.
-    x/y/z 단계는 QUICK_RETREAT_VELX(60), 'entrance'는 INSERT_VELX(30). 끝나면 run_load2가 바로 홈으로 간다.
-    """
-    steps = poses.SD_RETREAT_STEPS[layer]
-    log(f'[빼기] {layer}층 빠른 빼기 {steps} -> 홈')
-    for i, (kind, val) in enumerate(steps, 1):
-        if kind == 'entrance':
-            front = _insert_line(layer)[0]
-            log(f'  {i}/{len(steps)} 입구까지 {[round(v, 1) for v in front[:3]]}')
-            _movel_slow(front, '입구')
-        elif kind in ('x', 'y', 'z'):
-            d = {'x': 0.0, 'y': 0.0, 'z': 0.0}
-            d[kind] = val
-            log(f'  {i}/{len(steps)} {kind} {val:+g}')
-            move_rel(dx=d['x'], dy=d['y'], dz=d['z'], log=log, vel=QUICK_RETREAT_VELX)
-        else:
-            raise ValueError(f'SD_RETREAT_STEPS 단계 종류를 모름: {kind} (x / y / z / entrance)')
-
-
-def _uses_quick_retreat(layer: int) -> bool:
-    return layer in getattr(poses, 'SD_RETREAT_STEPS', {})
-
-
-def retreat_sd(layer: int = 3, log=print) -> None:
-    """(insert로 판재를 놓은 뒤) 빼기. 그리퍼는 그대로.
-
-    SD_RETREAT_STEPS에 있는 층: 그 순서로 짧게 빼기 (_quick_retreat).
-    없는 층: 넣은 직선 그대로 거꾸로 입구 -> 첫 점 (다가가기 층은 다가가기 길 전체 거꾸로 -> sd 3).
-    """
-    if _uses_quick_retreat(layer):
-        _quick_retreat(layer, log=log)
-        return
-    front, done, _, _ = _insert_line(layer)
-    pre = _insert_pre(layer)
-    cur = list(get_current_posx()[0])
-    log(f'[빼기] 지금 {[round(v, 1) for v in cur[:3]]} -> 입구 {[round(v, 1) for v in front[:3]]} -> 첫 점 {[round(v, 1) for v in pre[:3]]} (그리퍼 그대로)')
-    route = [('입구', front), ('첫 점', pre)]
-    if _uses_approach(layer):
-        # 다가가기 길을 거꾸로 -> sd 3
-        pts = _approach_points(layer)
-        steps = poses.SD_INSERT_APPROACH[layer]
-        rot = ('rx', 'ry', 'rz')
-        # 거꾸로 갈 때도 이어지는 회전 단계는 한 번에 (회전 묶음의 앞 단계 점들은 건너뜀)
-        back = [i for i in range(len(pts) - 1, 0, -1)
-                if not (steps[i][0] in rot and steps[i - 1][0] in rot)]
-        route = [('입구', front)] + [(f'다가가기 {i}단계', pts[i - 1]) for i in back] \
-            + [('sd 3', list(poses.SD_POS_X[poses.SD_TOP_LAYER]))]
-    prev = list(get_current_posx()[0])
-    for name, target in route:
-        # 자세만 바뀌는 구간(다가가기의 회전 단계를 되돌릴 때)은 천천히 돌리고 잠깐 멈춤
-        rotate = max(abs(target[i] - prev[i]) for i in range(3)) < 1.0 and \
-            max(abs(target[i] - prev[i]) for i in range(3, 6)) > 0.05
-        try:
-            _movel_slow(target, name, rotate=rotate)
-        except RuntimeError as exc:
-            raise RuntimeError(f'빼기 중 {exc}') from exc
-        prev = list(target)
-    log(f'[빼기] {route[-1][0]} 도착')
-
-
-# ---------------------------------------------------------------- 액션 콜백에서 호출
-PUT_BACK_RETREAT_MM = 100.0   # 판재 내려놓고 그리퍼 연 뒤 -X로 빠지는 거리 (mm), 그다음 바로 홈
-
-
-def put_back_and_home(layer: int, log=print) -> None:
-    """(잡고 들어 올린 상태, 판재 확인의 ry는 이미 되돌린 뒤) 판재를 제자리에 내려놓고 홈으로.
-
-    잡는 곳으로 천천히 내림 -> 그리퍼 열기 -> -X로 PUT_BACK_RETREAT_MM 빠지기 -> 홈 (빈손 속도).
-    """
-    log(f'[내려놓기] 적재대 {layer}층: 제자리로 내리기 -> 그리퍼 열기 -> 뒤로 {PUT_BACK_RETREAT_MM:.0f}mm -> 홈')
-    pick = list(poses.START_POS_PICK_X[layer])
-    _movel_slow(pick, '잡는 곳(내려놓기)')
-    grip_open()
-    wait(SETTLE_SEC)
-    back = list(pick)
-    back[0] -= PUT_BACK_RETREAT_MM
-    _movel_checked(back)   # 판재 옆을 지나가므로 기본 속도(VELX)
+    layer = goal.sd_pos_id
+    _check_sd_layer(layer)
+    log(f'[load2] 빼기 -> 작업대 {layer}층')
+    exit_rack(log=log)
+    go_sd(layer, log=log)
+    if layer not in poses.SD_INSERT_DONE_X and not _uses_approach(layer):
+        log(f'[load2] 작업대 {layer}층 넣기 좌표 없음 -> 작업대 앞에서 멈춤')
+        return True
+    ok = insert_sd(layer, log=log)
+    if not ok:
+        log('[load2] 넣기 완료 확인 안 됨 (위치/반력) -> 그래도 그리퍼 열었으니 빼고 홈으로. 결과 False')
+    retreat_sd(layer, log=log)
+    log('[load2] 홈 이동 (빈손 속도)')
     go_home(fast=True)
-    log('[내려놓기] 홈 도착 (빈손)')
+    return ok
 
 
+# ---- 2-2. Load1: 홈 -> 적재대 -> 잡기 -> 판재 확인 -> (없으면) 내려놓고 홈
 def _load1_common(goal, name: str, log=print) -> bool:
-    """홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인.
-
-    성공: 들어 올린 상태로 멈춤 (다음 load2가 여기서 시작) -> True
-    실패: 판재를 제자리에 내려놓고 그리퍼 열고 빠져서 홈 (빈손) -> False
-    """
     layer = goal.start_pos_id
     log(f'[{name}] 적재대 {layer}층')
     home_to_board(layer)
@@ -1238,63 +379,512 @@ def _load1_common(goal, name: str, log=print) -> bool:
     return False
 
 
-def run_load1(goal: Load1.Goal, log=print) -> bool:
-    """Load1: 홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인.
-
-    반환값: 판재 무게가 감지됐으면 True (들어 올린 채로 멈춤),
-            아니면 False (판재 제자리에 내려놓고 그리퍼 열고 홈으로 빠짐). 액션 result.success로 전달됨.
-    좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
-    """
-    return _load1_common(goal, 'load1', log=log)
-
-
-def run_load(goal: Load.Goal, log=print) -> bool:
-    """Load: 홈 -> 적재대(start_pos_id층) -> 잡고 +Z 들어 올려 무게 확인 (run_load1과 같음).
-
-    반환값: 판재 무게가 감지됐으면 True (들어 올린 채로 멈춤), 아니면 False (내려놓고 홈)
-    좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
-    """
-    return _load1_common(goal, 'load', log=log)   # 실패하면 내려놓고 홈 (run_load1과 같음)
-
-
-def run_load2(goal: Load2.Goal, log=print) -> bool:
-    """Load2: (Load로 판재를 잡고 들어 올린 상태에서) 빼기 -> 작업대 sd_pos_id층 넣기 -> 홈 복귀.
-
-    1) exit_rack   : 적재대에서 빼기. 지금 높이로 층을 알아내서 poses.RACK_EXIT_STEPS 순서대로
-                     (1층: 위로 -> 뒤로 -> ry 기울이기 -> 위로 -> 프린터 쪽 -Y / 2층: 위로 -> 뒤로).
-                     순서가 없는 층(3층)은 -X PULL_OUT_MM 빼기 -> 3층 높이까지 올리기.
-    2) go_sd       : 작업대 3층으로 movej -> sd_pos_id층이면 movel로 내려감
-    3) insert_sd : 작업대 넣기 (성공 시 그리퍼 열기)
-    4) retreat_sd -> 작업대 앞(SD_POS) -> go_home : 넣기 성공 시 그리퍼 빼고 홈 복귀
-    좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
-    """
-    layer = goal.sd_pos_id
-    _check_sd_layer(layer)
-    log(f'[load2] 빼기 -> 작업대 {layer}층')
-    exit_rack(log=log)
-    go_sd(layer, log=log)   # 층별 순서로 뺐으면 그 끝 위치라서 적재대 안전 확인 통과
-    if layer not in poses.SD_INSERT_DONE_X and not _uses_approach(layer):
-        log(f'[load2] 작업대 {layer}층 넣기 좌표 없음 -> 작업대 앞에서 멈춤')
-        return True
-    ok = insert_sd(layer, log=log)   # 밀기 끝나면 항상 그리퍼를 연다 (완료 확인 여부는 ok)
-    if not ok:
-        log('[load2] 넣기 완료 확인 안 됨 (위치/반력) -> 그래도 그리퍼 열었으니 빼고 홈으로. 결과 False')
-    retreat_sd(layer, log=log)
-    if _uses_quick_retreat(layer):
-        pass   # 짧게 빼고 바로 홈
-    elif _uses_approach(layer):
-        pass   # retreat_sd가 sd 3까지 나옴
-    elif layer in poses.SD_POS_J:
-        movej(posj(*poses.SD_POS_J[layer]), vel=EMPTY_VELJ, acc=EMPTY_ACCJ)
-    else:
-        _movel_checked(poses.SD_POS_X[layer], fast=True)
-    if layer != poses.SD_TOP_LAYER and not _uses_approach(layer) and not _uses_quick_retreat(layer):
-        movej(posj(*poses.SD_POS_J[poses.SD_TOP_LAYER]), vel=EMPTY_VELJ, acc=EMPTY_ACCJ)
-    log('[load2] 홈 이동 (빈손 속도)')
+def home_to_board(layer: int) -> None:
+    """홈(그리퍼 열기) -> 준비 -> 진입 높이 -> 진입 전(Z 하강) -> 적재대 layer층 잡는 곳. 잡는 곳 전까지는 빈손 속도."""
+    _need(layer, (poses.START_POS_READY_J, 'START_POS_READY'), (poses.START_POS_APPROACH_X, 'START_POS_APPROACH'),
+          (poses.START_POS_PICK_X, 'START_POS_PICK'))
     go_home(fast=True)
-    return ok
+    grip_open()
+    go_ready(layer, fast=True)
+    go_entry_top(layer, fast=True)
+    _move_to(poses.START_POS_APPROACH_J.get(layer), poses.START_POS_APPROACH_X[layer], fast=True)
+    _move_to(poses.START_POS_PICK_J.get(layer), poses.START_POS_PICK_X[layer])
 
 
+def go_ready(layer: int, fast: bool = False) -> None:
+    """준비 자세로 movej (홈과 손목 자세가 크게 달라 movel이면 특이점을 지남)."""
+    _movej(poses.START_POS_READY_J[layer], fast)
+
+
+def go_entry_top(layer: int, fast: bool = False) -> None:
+    """layer층 진입 전 X/Y, 공통 진입 높이(ENTRY_LAYER층 진입 전 Z)로 movel."""
+    top = list(poses.START_POS_APPROACH_X[layer])
+    top[2] = poses.START_POS_APPROACH_X[poses.ENTRY_LAYER][2]
+    _movel_checked(top, fast=fast)
+
+
+def grip_and_check(pose_x: list, log=print, layer: int | None = None) -> bool:
+    """잡기 -> +Z LIFT_Z_MM -> ry로 숙여 Fz 측정 -> 되돌리기. 숙인 뒤 Fz > 기준이면 판재 있음."""
+    deg = getattr(poses, 'TILT_CHECK_DEG_BY_LAYER', {}).get(layer, TILT_CHECK_DEG)
+    fz_n = getattr(poses, 'TILT_CHECK_FZ_BY_LAYER', {}).get(layer, TILT_CHECK_FZ_N)
+    grip_close()
+    lifted = list(pose_x)
+    lifted[2] += LIFT_Z_MM
+    _movel_checked(lifted, vel=CARRY_VELX)
+    wait(TILT_CHECK_SETTLE_SEC)
+    fz0 = read_force_xyz(TILT_CHECK_SAMPLES)[2]
+    tilt_base('y', deg, log=log, check=False)
+    wait(TILT_CHECK_SETTLE_SEC)
+    fz1 = read_force_xyz(TILT_CHECK_SAMPLES)[2]
+    tilt_base('y', -deg, log=log, check=False)
+    picked = fz1 > fz_n
+    log(f'[판재 확인] {layer if layer is not None else "?"}층 ry +{deg:g}도 숙여 누르기: 전 Fz={fz0:.2f}N  '
+        f'숙인 뒤 Fz={fz1:.2f}N (차이 {fz1 - fz0:+.2f}N)  기준: 숙인 뒤 Fz > {fz_n}N  '
+        f'-> {"판재 있음" if picked else "판재 없음"}')
+    return picked
+
+
+def put_back_and_home(layer: int, log=print) -> None:
+    """판재 없음: 잡는 곳으로 내려 그리퍼 열기 -> -X PUT_BACK_RETREAT_MM -> 홈."""
+    log(f'[내려놓기] 적재대 {layer}층: 제자리로 내리기 -> 그리퍼 열기 -> 뒤로 {PUT_BACK_RETREAT_MM:.0f}mm -> 홈')
+    pick = list(poses.START_POS_PICK_X[layer])
+    _movel_slow(pick, '잡는 곳(내려놓기)')
+    grip_open()
+    wait(SETTLE_SEC)
+    back = list(pick)
+    back[0] -= PUT_BACK_RETREAT_MM
+    _movel_checked(back)
+    go_home(fast=True)
+    log('[내려놓기] 홈 도착 (빈손)')
+
+
+# ---- 2-3. Load2 (1) 적재대에서 빼기
+def rack_layer_now() -> int | None:
+    """지금 위치가 적재대 몇 층에서 잡고 든 높이인지. 적재대 쪽이 아니거나 높이가 안 맞으면 None."""
+    cur = _cur_x()
+    picks = poses.START_POS_PICK_X
+    if cur[1] <= min(x[1] for x in picks.values()) - 100.0:
+        return None
+    best = min(picks, key=lambda n: abs(cur[2] - (picks[n][2] + LIFT_Z_MM)))
+    if abs(cur[2] - (picks[best][2] + LIFT_Z_MM)) > poses.RACK_LAYER_Z_TOL_MM:
+        return None
+    return best
+
+
+def exit_rack(layer: int | None = None, log=print) -> None:
+    """적재대에서 판재 빼기. 층은 지금 높이로 판단.
+
+    poses.RACK_EXIT_STEPS에 순서가 있으면 그대로 (도착 오차는 경고만), 없으면 pull_out -> rise_to_top.
+    """
+    if layer is None:
+        layer = rack_layer_now()
+        if layer is None:
+            raise RuntimeError(f'적재대에서 잡고 든 위치가 아님 (지금 {_r(_cur_x()[:3])}) -> 빼기 안 함. '
+                               f'load1 먼저 할 것')
+    steps = poses.RACK_EXIT_STEPS.get(layer)
+    if not steps:
+        log(f'[적재대 빼기] {layer}층: 기본 동작 (-X {PULL_OUT_MM:.0f}mm -> 3층 높이로 올리기)')
+        pull_out(log=log)
+        rise_to_top(log=log)
+        return
+    log(f'[적재대 빼기] {layer}층 순서 {len(steps)}단계: {steps}')
+    for i, (kind, val) in enumerate(steps, 1):
+        log(f' {i}/{len(steps)} {kind} {val:+g}')
+        _rel_step(kind, val, log=log, vel=CARRY_VELX, check=False)
+    log(f'[적재대 빼기] 끝: {_r(_cur_x())}')
+
+
+def pull_out(dist: float = PULL_OUT_MM, log=print) -> None:
+    """높이/옆/자세 그대로 -X로 dist 빼기 (판재 든 속도)."""
+    cur = _cur_x()
+    target = list(cur)
+    target[0] -= dist
+    log(f'[빼기] X {cur[0]:.1f} -> {target[0]:.1f} (-{dist:.0f}mm), Y {cur[1]:.1f}, Z {cur[2]:.1f} 유지')
+    _movel_checked(target, vel=CARRY_VELX)
+
+
+def rise_to_top(log=print) -> None:
+    """X/Y/자세 그대로 3층 들어 올린 높이(적재대 3층 Z + LIFT_Z_MM)까지 올리기. 이미 높으면 안 움직임."""
+    top_z = poses.START_POS_PICK_X[poses.ENTRY_LAYER][2] + LIFT_Z_MM
+    cur = _cur_x()
+    if cur[2] >= top_z - REACH_TOL_MM:
+        log(f'[올리기] 지금 Z {cur[2]:.1f} >= 3층 높이 {top_z:.1f} -> 안 움직임')
+        return
+    target = list(cur)
+    target[2] = top_z
+    log(f'[올리기] Z {cur[2]:.1f} -> {top_z:.1f} (3층 높이, X {cur[0]:.1f} Y {cur[1]:.1f} 그대로)')
+    _movel_checked(target, vel=CARRY_VELX)
+
+
+# ---- 2-4. Load2 (2) 작업대 sd 위치로 이동
+def _check_sd_layer(layer: int) -> None:
+    _need(layer, (poses.SD_POS_X, 'SD_POS'))
+
+
+def go_sd(layer: int = 3, log=print) -> None:
+    """판재 든 채 sd 3(SD_TOP_LAYER)으로 movej (관절값 확인).
+
+    다가가기 층(1, 2층)은 여기서 멈추고 insert_sd가 sd 3부터 내려간다. 그 외 층은 movel로 그 층 sd까지.
+    """
+    _check_sd_layer(layer)
+    top = poses.SD_TOP_LAYER
+    log(f'[작업대] 지금 {_r(_cur_x()[:3])} -> 작업대 {top}층 {poses.SD_POS_X[top][:3]} (movej)')
+    movej(posj(*poses.SD_POS_J[top]), vel=CARRY_VELJ, acc=CARRY_ACCJ)
+    j = list(get_current_posj())
+    if max(abs(j[i] - poses.SD_POS_J[top][i]) for i in range(6)) > 1.0:
+        raise RuntimeError(f'작업대 {top}층에 못 감: 목표 J={poses.SD_POS_J[top]} 현재 J={_r(j)}')
+    if layer == top:
+        return
+    if _uses_approach(layer):
+        log(f'[작업대] {layer}층은 insert에서 sd 3부터 다가가기 순서로 내려감 -> 여기서 멈춤')
+    else:
+        log(f'[작업대] {top}층 -> {layer}층 {poses.SD_POS_X[layer][:3]} (movel 하강)')
+        _movel_checked(poses.SD_POS_X[layer], vel=CARRY_VELX)
+
+
+# ---- 2-5. Load2 (3) 넣기
+#   1층 (SD_INSERT_CHECK_ONLY): 다가가기 -> 마지막 fwd를 순응 제어로 밀며 반력 확인 -> 항상 놓기 (True)
+#   2층 (SD_INSERT_APPROACH)  : 다가가기 끝 = 입구 -> 직선으로 SD_INSERT_DONE_X -> 순응 밀기 (위치 + 반력)
+#   3층                       : 첫 점(SD_PRE_INSERT) -> 입구(SD_INSERT_FRONT) -> 끝(SD_INSERT_DONE) 순응 밀기
+def insert_sd(layer: int = 3, log=print) -> bool:
+    """작업대 layer층에 넣고 놓기. 완료(끝 위치 + 반력) 확인되면 True. 완료 아니어도 그리퍼는 연다."""
+    if getattr(poses, 'SD_INSERT_CHECK_ONLY', {}).get(layer):
+        return _check_force_and_release(layer, log=log)
+    front, done, u, length = _insert_line(layer)
+    pre = _insert_pre(layer)
+    log(f'[넣기] 첫 점 {_r(pre[:3])} -> 입구 {_r(front[:3])} -> 끝 {_r(done[:3])} '
+        f'(직선 {length:.1f}mm, 방향 {_r(u, 3)})')
+
+    # 1) 첫 점 -> 멈춤 -> 입구
+    if _uses_approach(layer):
+        approach_sd(layer, log=log)
+    else:
+        _movel_checked(pre, vel=INSERT_VELX)
+    log(f'[넣기] {PRE_INSERT_HOLD_SEC}초 멈춤')
+    wait(PRE_INSERT_HOLD_SEC)
+    log(f'[넣기] 입구 {_r(front[:3])} 자세 {_r(front[3:6], 2)}')
+    _movel_checked(front, vel=INSERT_VELX)
+    wait(SETTLE_SEC)
+    base = read_force_xyz()
+    log(f'[넣기] 기준 힘 Fx={base[0]:.1f} Fy={base[1]:.1f} Fz={base[2]:.1f}N')
+
+    # 2) 위치 제어로 끝 PUSH_START_BEFORE_MM 앞까지 (걸리면 멈춤)
+    s0 = length - PUSH_START_BEFORE_MM
+    _insert_move(_point_on_line(front, done, s0), base, log, '일자로 넣기', vel=STRAIGHT_VELX, acc=STRAIGHT_ACCX)
+    s_max = length + getattr(poses, 'SD_PUSH_OVERSHOOT_MM', {}).get(layer, PUSH_OVERSHOOT_MM)
+
+    # 3) 순응 제어로 같은 직선을 PUSH_STEP_MM씩 밀며 끝 위치 + 반력 확인
+    wait(SETTLE_SEC)
+    base = read_force_xyz()
+    react_n = _react_n(layer)
+    log(f'[넣기] 순응 제어로 밀기: 직선 {s0:.1f} -> 최대 {s_max:.1f}mm, {PUSH_STEP_MM:.0f}mm씩 '
+        f'(완료: 진행 >= {length - DONE_POS_TOL_MM:.1f}mm 그리고 반력 > {react_n}N)')
+    finished = False
+    max_react, max_at, last_f = -1e9, 0.0, [0.0, 0.0, 0.0]
+    with _compliance(layer, log):
+        st = s0
+        while st < s_max - 1e-9:
+            st = min(st + PUSH_STEP_MM, s_max)
+            movel(posx(*_point_on_line(front, done, st)), vel=PUSH_VELX, acc=PUSH_ACCX)
+            f = read_force_xyz(PUSH_FORCE_SAMPLES)
+            cur = _cur_x()
+            s_now = sum((cur[i] - front[i]) * u[i] for i in range(3))   # 직선 위 진행 거리
+            react = _react(f, base, u)
+            last_f = [f[i] - base[i] for i in range(3)]
+            if react > max_react:
+                max_react, max_at = react, st
+            reached = s_now >= length - DONE_POS_TOL_MM
+            force_ok = react > react_n
+            msg = (f'  [밀기 {st:.1f}mm] 진행 {s_now:.1f}mm (끝까지 {length - s_now:+.1f}mm, 덜 감 {st - s_now:.1f}mm) '
+                   f'반력 {react:+.2f}N  Fx={f[0]:+.2f} Fy={f[1]:+.2f} Fz={f[2]:+.2f}  '
+                   f'위치{"O" if reached else "X"} 힘{"O" if force_ok else "X"}')
+            if reached and force_ok:
+                log(msg + '  -> 넣기 완료')
+                finished = True
+                break
+            log(msg)
+        else:
+            log('[넣기] 끝까지 밀었는데 완료 아님')
+    log(f'[넣기] 힘 요약: 최대 반력 {max_react:+.2f}N ({max_at:.0f}mm에서), 마지막 힘 변화 '
+        f'dFx={last_f[0]:+.2f} dFy={last_f[1]:+.2f} dFz={last_f[2]:+.2f}N (기준 반력 {react_n}N)')
+    grip_open()
+    log('[넣기] 그리퍼 열기 (판재 놓음)' if finished
+        else '[넣기] 완료 확인은 안 됐지만 그리퍼 열기 (판재 놓음) -> 결과 False')
+    return finished
+
+
+def _check_force_and_release(layer: int, log=print) -> bool:
+    """(1층) 다가가기 마지막 fwd: 처음 SD_INSERT_CHECK_FROM_MM은 위치 제어, 나머지는 순응 제어로
+    CHECK_STEP_MM씩 밀며 반력 > 기준이면 멈춤. 반력과 상관없이 놓고 True."""
+    approach_sd(layer, log=log, skip_last=True)
+    steps, pts = poses.SD_INSERT_APPROACH[layer], _approach_points(layer)
+    start, last = pts[-2], pts[-1]
+    kind, val = steps[-1]
+    total = _dist(start, last)
+    u = _push_dir(layer, last[3:6])
+    react_n = _react_n(layer)
+    free = min(getattr(poses, 'SD_INSERT_CHECK_FROM_MM', {}).get(layer, 0.0), total)
+
+    log(f'  {len(steps)}/{len(steps)} {kind} {val:+g} -> {_r(last[:3])} '
+        f'(처음 {free:.0f}mm 위치 제어, 나머지 {total - free:.0f}mm 순응 제어 {CHECK_STEP_MM:.0f}mm씩, '
+        f'반력 > {react_n}N이면 멈추고 놓기)')
+    d = 0.0
+    if free > 0:
+        movel(posx(*_point_on_line(start, last, free)), vel=INSERT_VELX, acc=INSERT_ACCX)
+        d = free
+        log(f'  [밀기 {d:.0f}/{total:.0f}mm] 위치 제어로 이동')
+    wait(SETTLE_SEC)
+    base = read_force_xyz()
+    got = False
+    with _compliance(layer, log):
+        while d < total - 1e-9:
+            d = min(d + CHECK_STEP_MM, total)
+            movel(posx(*_point_on_line(start, last, d)), vel=PUSH_VELX, acc=PUSH_ACCX)
+            react = _react(read_force_xyz(PUSH_FORCE_SAMPLES), base, u)
+            got = react > react_n
+            log(f'  [순응 밀기 {d:.0f}/{total:.0f}mm] 반력 {react:+.2f}N (기준 > {react_n}N)'
+                f'{" -> 받음, 멈추고 놓기" if got else ""}')
+            if got:
+                break
+    if not got:
+        log(f'[넣기] {total:.0f}mm 끝까지 밀었는데 반력 {react_n}N 안 받음 -> 그대로 놓음')
+    grip_open()
+    log('[넣기] 그리퍼 열기 (판재 놓음)')
+    return True
+
+
+def approach_sd(layer: int, log=print, skip_last: bool = False) -> None:
+    """sd 3 -> SD_INSERT_APPROACH[layer] 순서대로 다가가기. 이어지는 회전 단계는 한 번에 돌림.
+
+    skip_last=True면 마지막 단계는 부르는 쪽(_check_force_and_release)이 힘을 재며 직접 간다.
+    """
+    if not _uses_approach(layer):
+        raise ValueError(f'{layer}층은 다가가기 순서(SD_INSERT_APPROACH)가 없음 (가능: {list(poses.SD_INSERT_APPROACH)})')
+    steps = poses.SD_INSERT_APPROACH[layer]
+    pts = _approach_points(layer)
+    log(f'[넣기] {layer}층: sd 3에서 다가가기 {steps}')
+    _movel_slow(poses.SD_POS_X[poses.SD_TOP_LAYER], 'sd 3')
+    for i, ((kind, val), pt) in enumerate(zip(steps, pts), 1):
+        if skip_last and i == len(steps):
+            break
+        if kind in _ROT and i < len(steps) and steps[i][0] in _ROT:
+            log(f'  {i}/{len(pts)} {kind} {val:+g} (다음 회전과 같이)')
+            continue
+        log(f'  {i}/{len(pts)} {kind} {val:+g} -> {_r(pt[:3])}' + (f' 자세 {_r(pt[3:6], 2)}' if kind in _ROT else ''))
+        _movel_slow(pt, f'다가가기 {i}단계', rotate=kind in _ROT)
+
+
+def _uses_approach(layer: int) -> bool:
+    return layer in getattr(poses, 'SD_INSERT_APPROACH', {})
+
+
+def _approach_points(layer: int) -> list:
+    """sd 3에서 SD_INSERT_APPROACH[layer] 순서대로 간 점들 (마지막 = 입구). fwd는 그때 그리퍼 방향."""
+    p = list(poses.SD_POS_X[poses.SD_TOP_LAYER])
+    pts = []
+    for kind, val in poses.SD_INSERT_APPROACH[layer]:
+        if kind == 'fwd':
+            d = _tool_z_dir(p[3:6])
+            p[:3] = [p[i] + d[i] * val for i in range(3)]
+        elif kind in ('x', 'y', 'z'):
+            p['xyz'.index(kind)] += val
+        elif kind in _ROT:
+            p = p[:3] + rotate_about_base(kind[1], p[3:6], val)
+        else:
+            raise ValueError(f'SD_INSERT_APPROACH 단계 종류를 모름: {kind} (fwd / x / y / z / rx / ry / rz)')
+        pts.append(list(p))
+    return pts
+
+
+def _insert_pre(layer: int) -> list:
+    """넣기 첫 점 (여기서 멈춤). 다가가기 층은 입구, 그 외는 SD_PRE_INSERT_X."""
+    if _uses_approach(layer):
+        return _approach_points(layer)[-1]
+    return list(poses.SD_PRE_INSERT_X[layer])
+
+
+def _insert_line(layer: int) -> tuple[list, list, list, float]:
+    """넣는 직선 (입구, 끝, 방향 단위벡터, 길이 mm)."""
+    if _uses_approach(layer):
+        _need(layer, (poses.SD_INSERT_DONE_X, 'SD_INSERT_DONE'))
+        front = _approach_points(layer)[-1]
+    else:
+        _need(layer, (poses.SD_PRE_INSERT_X, 'SD_PRE_INSERT'), (poses.SD_INSERT_FRONT_X, 'SD_INSERT_FRONT'),
+              (poses.SD_INSERT_DONE_X, 'SD_INSERT_DONE'))
+        front = list(poses.SD_INSERT_FRONT_X[layer])
+    done = list(poses.SD_INSERT_DONE_X[layer])
+    length = _dist(front, done)
+    return front, done, [(done[i] - front[i]) / length for i in range(3)], length
+
+
+def _insert_move(pose_x: list, base: list, log, label: str,
+                 vel: float = INSERT_VELX, acc: float = INSERT_ACCX) -> None:
+    """movel 후 X/Y 힘 변화 확인. JAM_FORCE_N 이상이면 걸린 것 -> 예외 (잡은 채로)."""
+    movel(posx(*pose_x), vel=vel, acc=acc)
+    f = read_force_xyz()
+    dfx, dfy = f[0] - base[0], f[1] - base[1]
+    log(f'  [{label}] X={pose_x[0]:.1f} Y={pose_x[1]:.1f}  dFx={dfx:+.1f}N dFy={dfy:+.1f}N')
+    if max(abs(dfx), abs(dfy)) >= JAM_FORCE_N:
+        raise RuntimeError(f'넣다가 걸림 ({label}: dFx={dfx:+.1f}N dFy={dfy:+.1f}N, '
+                           f'기준 {JAM_FORCE_N}N) -> 멈춤, 그리퍼는 잡은 상태')
+
+
+def _keep_z(layer: int) -> bool:
+    return bool(getattr(poses, 'SD_INSERT_KEEP_Z', {}).get(layer))
+
+
+def _push_dir(layer: int, ori: list) -> list:
+    """미는 방향 단위벡터. SD_INSERT_KEEP_Z 층은 수평으로 눕힘 (높이 유지)."""
+    d = _tool_z_dir(ori)
+    if _keep_z(layer):
+        n = math.hypot(d[0], d[1])
+        d = [d[0] / n, d[1] / n, 0.0]
+    return d
+
+
+def _react_n(layer: int) -> float:
+    return getattr(poses, 'SD_DONE_REACT_N', {}).get(layer, DONE_REACT_N)
+
+
+def _react(f: list, base: list, u: list) -> float:
+    """미는 방향 반력 (기준 대비, + = 막혀서 밀림)."""
+    return -sum((f[i] - base[i]) * u[i] for i in range(3))
+
+
+@contextmanager
+def _compliance(layer: int, log=print):
+    """순응 제어 구간. 강성 X = 끝 + PUSH_OVERSHOOT_MM에서 PUSH_FORCE_N, KEEP_Z 층은 Z 최대.
+
+    나올 때(예외여도) 해제 -> 그리퍼 열기 전에 순응을 풀어 눌린 힘에 손목이 튀지 않게.
+    """
+    stx = list(COMPLIANCE_STX)
+    stx[0] = PUSH_FORCE_N / (PUSH_OVERSHOOT_MM / 1000.0)
+    if _keep_z(layer):
+        stx[2] = KEEP_Z_STIFF_N_M
+    log(f'[넣기] 순응 강성 {[round(v) for v in stx[:3]]}N/m (X {stx[0] / 1000:.2f}N/mm'
+        f'{", Z 고정" if _keep_z(layer) else ""})')
+    task_compliance_ctrl(stx=stx)
+    try:
+        wait(0.3)
+        yield
+    finally:
+        release_compliance_ctrl()
+
+
+# ---- 2-6. Load2 (4) 놓은 뒤 빼기 (끝나면 run_load2가 바로 홈)
+def retreat_sd(layer: int = 3, log=print) -> None:
+    """poses.SD_RETREAT_STEPS[layer] 순서로 빼기. 그리퍼 그대로.
+
+    ('x'/'y'/'z', mm) 직선 (QUICK_RETREAT_VELX) / ('entrance', 0) 넣은 직선 따라 입구까지 (INSERT_VELX).
+    """
+    steps = getattr(poses, 'SD_RETREAT_STEPS', {}).get(layer)
+    if not steps:
+        raise ValueError(f'SD_RETREAT_STEPS에 {layer}층 순서 없음')
+    log(f'[빼기] {layer}층 빼기 {steps} -> 홈')
+    for i, (kind, val) in enumerate(steps, 1):
+        if kind == 'entrance':
+            front = _insert_line(layer)[0]
+            log(f'  {i}/{len(steps)} 입구까지 {_r(front[:3])}')
+            _movel_slow(front, '입구')
+        else:
+            log(f'  {i}/{len(steps)} {kind} {val:+g}')
+            _rel_step(kind, val, log=log, vel=QUICK_RETREAT_VELX)
+
+
+# ============================================================================
+# PART 3. Unload - 작업대에서 판재 꺼내기  (※ 다른 사람 작업, 코드 그대로)
+# ============================================================================
+
+# ---- 3-1. 액션 진입점
+_last_unload_layer: int | None = None
+
+
+def run_unload1(goal: Unload1.Goal, log=print) -> bool:
+    """Unload1: 홈 -> 진입전2 -> 작업대(sd_pos_id층) -> 잡고 -X 당겨 턱 걸림 확인.
+
+    반환값: 베드판을 잡아 턱에 걸리는 힘이 감지됐으면 True (당긴 채로 멈춤),
+            감지되지 않았으면 원위치 복귀 및 그리퍼 열기 후 진입전2 -> ... -> 홈으로 역순 복귀하고 False.
+    좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
+    """
+    global _last_unload_layer
+    layer = goal.sd_pos_id
+    table = getattr(unload_poses, 'UNLOAD_J', {})
+    layers = getattr(unload_poses, 'UNLOAD_LAYER_STEP', {})
+    frm = getattr(unload_poses, 'UNLOAD_BRANCH_FROM', None)
+    if layer not in layers:
+        raise ValueError(f'UNLOAD_LAYER_STEP에 {layer}층 없음 (가능: {sorted(layers)})')
+    if frm not in table:
+        raise ValueError(f'UNLOAD_J에 진입전2({frm}) 좌표 없음')
+    nums = [n for n in sorted(table) if 1 <= n <= frm]
+    if not nums:
+        raise ValueError(f'UNLOAD_J에 시작~진입전2({frm}) 좌표 없음')
+    target_step = layers[layer]
+    if target_step not in table:
+        raise ValueError(f'UNLOAD_J에 {layer}층({target_step}번) 좌표 없음')
+
+    _last_unload_layer = layer
+    log(f'[unload1] 작업대 {layer}층')
+    for idx, n in enumerate(nums):
+        unload_move_step(n, log=log)
+        if idx == 0:
+            grip_open()
+    unload_enter_layer(layer, log=log)
+    log(f'  언로드{layer} 도착 -> {UNLOAD_ARRIVE_WAIT_SEC:.0f}초 대기 후 잡기')
+    wait(UNLOAD_ARRIVE_WAIT_SEC)
+    if unload_grab_pull(layer, log=log):
+        return True
+    unload_retreat_home(layer, log=log)   # 못 잡음 -> 진입전2 -> ... -> 홈으로 역순 복귀
+    return False
+
+
+def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool:
+    """Unload2: (Unload1로 베드판을 잡은 상태에서) 빼내기 -> 수령대(receive_pos_id) -> 놓기 -> 홈 복귀.
+
+    1) UNLOAD_EXTRACT_STEPS[layer] 순서로 베드 빼내기
+       (UNLOAD_MOVEL_FROM_STEP 이전은 movej, 이후는 UNLOAD_USE_MOVEL에 따라 movel)
+    2) UNLOAD_RECV_J[receive_pos_id] 순서로 수령대 이동 (직전 좌표와 같으면 생략)
+    3) grip_open()으로 수령대에 베드판 놓기
+    4) 복귀 경로(unload_poses.unload_return_path(receive_pos_id))를 movesj 한 번으로 홈 복귀
+    좌표가 없는 수령대 번호나 추출 경로가 없는 층이면 움직이기 전에 예외 처리된다.
+    """
+    receive_pos_id = goal.receive_pos_id
+    recv_table = getattr(unload_poses, 'UNLOAD_RECV_J', {})
+    if receive_pos_id not in recv_table:
+        raise ValueError(
+            f'UNLOAD_RECV_J에 수령대 {receive_pos_id}번 좌표 없음 (가능: {sorted(recv_table)})'
+        )
+
+    extract_table = getattr(unload_poses, 'UNLOAD_EXTRACT_STEPS', {})
+    target_layer = _last_unload_layer if layer is None else layer
+    if target_layer is None:
+        if len(extract_table) == 1:
+            target_layer = next(iter(extract_table))
+            log(f'[unload2] 직전 unload1 층 정보 없음 -> 유일한 추출 경로({target_layer}층) 사용')
+        else:
+            raise ValueError('직전 unload1 층 정보가 없어 추출 경로를 결정할 수 없음')
+
+    steps = list(extract_table.get(target_layer, []))
+    if not steps:
+        raise ValueError(
+            f'UNLOAD_EXTRACT_STEPS에 {target_layer}층 좌표 없음 (가능: {sorted(extract_table)})'
+        )
+
+    table = getattr(unload_poses, 'UNLOAD_J', {})
+    for n in steps:
+        if n not in table:
+            raise ValueError(f'UNLOAD_J에 {n}번 좌표 없음 (가능: {sorted(table)})')
+
+    movel_from = getattr(unload_poses, 'UNLOAD_MOVEL_FROM_STEP', 10)
+
+    log(f'[unload2] 작업대 {target_layer}층 빼내기 -> 수령대 {receive_pos_id}번')
+    for n in steps:
+        linear = UNLOAD_USE_MOVEL and n >= movel_from
+        unload_move_step(n, log=log, linear=linear)
+
+    last_j = table[steps[-1]][1]
+    for name, jj in recv_table[receive_pos_id]:
+        if list(jj) == list(last_j):
+            log(f'  {name}: 지금 위치와 같은 좌표 -> 이동 생략')
+            continue
+        unload_move_j(name, jj, log=log)
+
+    unload_recv_wiggle(log=log)
+    log(f'  수령대{receive_pos_id} 도착 -> 그리퍼 열기 (놓기)')
+    grip_open()
+
+    unload_return_home(receive_pos_id, log=log)
+
+    log(f'[unload2] 수령대{receive_pos_id} 전달 후 홈 복귀 완료')
+    return True
+
+
+def run_unload(goal: Unload.Goal, log=print) -> bool:
+    """Unload: 아직 동작 없음. 홈 위치로만 이동."""
+    go_home()
+    return True
+
+
+# ---- 3-2. 언로드 이동 / 잡고 당기기 / 수령대 / 복귀
 def unload_move_step(n: int, log=print, linear: bool = False) -> None:
     """UNLOAD_J[n] 좌표로 이동. linear=True면 movel(직선), 아니면 movej(관절).
     속도/가속도 비율은 unload_poses.UNLOAD_STEP_SPEED[n] (없으면 1.0 / 1.0)."""
@@ -1453,115 +1043,9 @@ def unload_grab_pull(layer: int, log=print) -> bool:
     return False
 
 
-_last_unload_layer: int | None = None
-
-
-def run_unload1(goal: Unload1.Goal, log=print) -> bool:
-    """Unload1: 홈 -> 진입전2 -> 작업대(sd_pos_id층) -> 잡고 -X 당겨 턱 걸림 확인.
-
-    반환값: 베드판을 잡아 턱에 걸리는 힘이 감지됐으면 True (당긴 채로 멈춤),
-            감지되지 않았으면 원위치 복귀 및 그리퍼 열기 후 진입전2 -> ... -> 홈으로 역순 복귀하고 False.
-    좌표 없는 층 번호가 오면 움직이기 전에 실패(예외) 처리된다.
-    """
-    global _last_unload_layer
-    layer = goal.sd_pos_id
-    table = getattr(unload_poses, 'UNLOAD_J', {})
-    layers = getattr(unload_poses, 'UNLOAD_LAYER_STEP', {})
-    frm = getattr(unload_poses, 'UNLOAD_BRANCH_FROM', None)
-    if layer not in layers:
-        raise ValueError(f'UNLOAD_LAYER_STEP에 {layer}층 없음 (가능: {sorted(layers)})')
-    if frm not in table:
-        raise ValueError(f'UNLOAD_J에 진입전2({frm}) 좌표 없음')
-    nums = [n for n in sorted(table) if 1 <= n <= frm]
-    if not nums:
-        raise ValueError(f'UNLOAD_J에 시작~진입전2({frm}) 좌표 없음')
-    target_step = layers[layer]
-    if target_step not in table:
-        raise ValueError(f'UNLOAD_J에 {layer}층({target_step}번) 좌표 없음')
-
-    _last_unload_layer = layer
-    log(f'[unload1] 작업대 {layer}층')
-    for idx, n in enumerate(nums):
-        unload_move_step(n, log=log)
-        if idx == 0:
-            grip_open()
-    unload_enter_layer(layer, log=log)
-    log(f'  언로드{layer} 도착 -> {UNLOAD_ARRIVE_WAIT_SEC:.0f}초 대기 후 잡기')
-    wait(UNLOAD_ARRIVE_WAIT_SEC)
-    if unload_grab_pull(layer, log=log):
-        return True
-    unload_retreat_home(layer, log=log)   # 못 잡음 -> 진입전2 -> ... -> 홈으로 역순 복귀
-    return False
-
-
-def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool:
-    """Unload2: (Unload1로 베드판을 잡은 상태에서) 빼내기 -> 수령대(receive_pos_id) -> 놓기 -> 홈 복귀.
-
-    1) UNLOAD_EXTRACT_STEPS[layer] 순서로 베드 빼내기
-       (UNLOAD_MOVEL_FROM_STEP 이전은 movej, 이후는 UNLOAD_USE_MOVEL에 따라 movel)
-    2) UNLOAD_RECV_J[receive_pos_id] 순서로 수령대 이동 (직전 좌표와 같으면 생략)
-    3) grip_open()으로 수령대에 베드판 놓기
-    4) 복귀 경로(unload_poses.unload_return_path(receive_pos_id))를 movesj 한 번으로 홈 복귀
-    좌표가 없는 수령대 번호나 추출 경로가 없는 층이면 움직이기 전에 예외 처리된다.
-    """
-    receive_pos_id = goal.receive_pos_id
-    recv_table = getattr(unload_poses, 'UNLOAD_RECV_J', {})
-    if receive_pos_id not in recv_table:
-        raise ValueError(
-            f'UNLOAD_RECV_J에 수령대 {receive_pos_id}번 좌표 없음 (가능: {sorted(recv_table)})'
-        )
-
-    extract_table = getattr(unload_poses, 'UNLOAD_EXTRACT_STEPS', {})
-    target_layer = _last_unload_layer if layer is None else layer
-    if target_layer is None:
-        if len(extract_table) == 1:
-            target_layer = next(iter(extract_table))
-            log(f'[unload2] 직전 unload1 층 정보 없음 -> 유일한 추출 경로({target_layer}층) 사용')
-        else:
-            raise ValueError('직전 unload1 층 정보가 없어 추출 경로를 결정할 수 없음')
-
-    steps = list(extract_table.get(target_layer, []))
-    if not steps:
-        raise ValueError(
-            f'UNLOAD_EXTRACT_STEPS에 {target_layer}층 좌표 없음 (가능: {sorted(extract_table)})'
-        )
-
-    table = getattr(unload_poses, 'UNLOAD_J', {})
-    for n in steps:
-        if n not in table:
-            raise ValueError(f'UNLOAD_J에 {n}번 좌표 없음 (가능: {sorted(table)})')
-
-    movel_from = getattr(unload_poses, 'UNLOAD_MOVEL_FROM_STEP', 10)
-
-    log(f'[unload2] 작업대 {target_layer}층 빼내기 -> 수령대 {receive_pos_id}번')
-    for n in steps:
-        linear = UNLOAD_USE_MOVEL and n >= movel_from
-        unload_move_step(n, log=log, linear=linear)
-
-    last_j = table[steps[-1]][1]
-    for name, jj in recv_table[receive_pos_id]:
-        if list(jj) == list(last_j):
-            log(f'  {name}: 지금 위치와 같은 좌표 -> 이동 생략')
-            continue
-        unload_move_j(name, jj, log=log)
-
-    unload_recv_wiggle(log=log)
-    log(f'  수령대{receive_pos_id} 도착 -> 그리퍼 열기 (놓기)')
-    grip_open()
-
-    unload_return_home(receive_pos_id, log=log)
-
-    log(f'[unload2] 수령대{receive_pos_id} 전달 후 홈 복귀 완료')
-    return True
-
-
-def run_unload(goal: Unload.Goal, log=print) -> bool:
-    """Unload: 아직 동작 없음. 홈 위치로만 이동."""
-    go_home()
-    return True
-
-
-# ---------------------------------------------------------------- 조그 (신규 상수)
+# ============================================================================
+# PART 4. 조그 / 그리퍼  (※ 다른 사람 작업 - 티칭 팬던트, 코드 그대로)
+# ============================================================================
 # 조그는 힘 기반 안전장치(무게 감지, 걸림 감지)가 없는 자유공간 이동이라
 # LOAD/UNLOAD 기본값보다 더 낮게 둔다 (부모 PRD 9장: "절반 이하" 권장보다 더 낮춤).
 JOG_VELJ, JOG_ACCJ = 15.0, 15.0     # deg, deg/s^2  (기존 VELJ/ACCJ=30의 절반)

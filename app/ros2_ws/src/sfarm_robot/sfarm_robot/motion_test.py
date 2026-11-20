@@ -9,8 +9,6 @@
 사용법
   ros2 run sfarm_robot motion_test              # 메뉴에서 골라서 실행 (반복)
   ros2 run sfarm_robot motion_test board 3      # 바로 실행: 홈 -> 적재대 3층
-  ros2 run sfarm_robot motion_test board 2 2    # 진입 높이(2단계)까지만 가고 멈춤 (3=진입 전, 4=적재대)
-  ros2 run sfarm_robot motion_test board_step 3 # 한 단계씩 Enter로 진행
   ros2 run sfarm_robot motion_test load 1       # 바로 실행: run_load(start_pos_id=1) (액션과 같은 동작)
 
 주의: 액션 서버(robot_action_server)와 동시에 로봇을 움직이지 말 것.
@@ -92,7 +90,7 @@ def weight_test(motions, put_back: bool = True) -> None:
     lifted = _fz_stats(motions, f'3 {motions.LIFT_Z_MM:.0f}mm 든 뒤')
     print(f'[wtest] 차이: 닫은 뒤-닫기 전 {closed - before:+.3f}N | '
           f'든 뒤-닫은 뒤 {lifted - closed:+.3f}N (판재 무게만) | '
-          f'든 뒤-닫기 전 {lifted - before:+.3f}N (지금 load1 판정 방식, 기준 |{motions.WEIGHT_THRESHOLD_N}|N)')
+          f'든 뒤-닫기 전 {lifted - before:+.3f}N')
     if put_back:
         motions.movel(motions.posx(*start), vel=motions.INSERT_VELX, acc=motions.INSERT_ACCX)
         motions.grip_open()
@@ -192,12 +190,12 @@ def tilt_test(motions, deg: float = 3.0) -> None:
         raise ValueError(f'숙이는 각도는 10도까지만 (입력 {deg})')
     print(f'[tilttest] ry {deg:+.1f}도로 숙여 누르는 힘 확인')
     before = _force6_stats(motions, '숙이기 전')
-    motions.tilt_ry(deg)
+    motions.tilt_base('y', deg)
     after = _force6_stats(motions, f'ry {deg:+.1f}도 숙인 뒤')
     d = [after[i] - before[i] for i in range(6)]
     print(f'[tilttest] 차이 (숙인 뒤 - 전): Fx {d[0]:+.3f} Fy {d[1]:+.3f} Fz {d[2]:+.3f} N | '
           f'Mx {d[3]:+.3f} My {d[4]:+.3f} Mz {d[5]:+.3f} Nm')
-    motions.tilt_ry(-deg)
+    motions.tilt_base('y', -deg)
     print('[tilttest] 원래 자세로 되돌림')
 
 
@@ -282,11 +280,7 @@ def build_commands(motions):
         force_test.pushtest(axis, mm, step)
 
     def sd(args):
-        # 작업대로 이동한 뒤 툴 Z축을 미는 방향(+X)에 맞춤. 다음 insert는 이 자세 그대로 넣는다.
-        # sd 3 force : 판재가 아직 적재대 안에 있어도 이동 (시험용)
-        force = len(args) > 1 and args[1].lower() == 'force'
-        motions.go_sd(int(args[0]) if args else 3, force=force)
-        motions.align_push_axis()
+        motions.go_sd(int(args[0]) if args else 3)
 
     def j1(args):
         # J1(몸통)만 [도]만큼 돌리기 (- = 프린터 쪽). 나머지 관절 그대로 -> 몸통과 거리 그대로 (손목 한계 안 걸림)
@@ -321,7 +315,7 @@ def build_commands(motions):
         deg = float(args[0]) if args else 2.0
         if abs(deg) > RY_MAX_DEG:
             raise ValueError(f'한 번에 {RY_MAX_DEG}도까지만 (입력 {deg})')
-        motions.tilt_ry(deg)
+        motions.tilt_base('y', deg)
         now = list(motions.get_current_posx()[0])
         print(f'  도착: X={now[0]:.1f} Y={now[1]:.1f} Z={now[2]:.1f}  자세={[round(v, 2) for v in now[3:6]]}')
 
@@ -387,25 +381,13 @@ def build_commands(motions):
         print(f'  현재 Fz = {fz:.2f} N')
 
     def board(args):
-        layer = int(args[0]) if len(args) > 0 else 3
-        until = int(args[1]) if len(args) > 1 else None
-        motions.home_to_board(layer, until=until)
-
-    def board_step(args):
-        layer = int(args[0]) if len(args) > 0 else 3
-
-        def ask(i, name):
-            ans = input(f'  [{i}단계] {name}(으)로 이동할까요? (Enter=진행, q=멈춤) ')
-            return ans.strip().lower() != 'q'
-
-        motions.home_to_board(layer, before_step=ask)
+        motions.home_to_board(int(args[0]) if args else 3)
 
     return {
         'home': ('홈으로 바로 이동 (적재대 안에서는 쓰지 말 것 -> back)', lambda a: motions.go_home()),
         'homef': ('홈으로 빠르게 이동 (빈손 속도 EMPTY_VELJ=100, retreat 뒤 빈손일 때만)',
                   lambda a: motions.go_home(fast=True)),
-        'board': ('홈 -> 적재대 [층=3] [멈출 단계: 0홈 1준비 2진입높이 3진입전 4적재대]', board),
-        'board_step': ('홈 -> 적재대 [층=3] 한 단계씩 (Enter=진행, q=멈춤)', board_step),
+        'board': ('홈 -> 적재대 [층=3] 잡는 곳까지 (그리퍼 열림)', board),
         'j1': ('[시험] J1(몸통)만 [도]만큼 돌리기 (기본 -5, - = 프린터 쪽, 느리게) (그리퍼 그대로)', j1),
         'side': ('[시험] 높이 그대로 Y로 [mm] 직선 이동 (기본 -10, - = 프린터 쪽) (그리퍼 그대로)', side),
         'up': ('지금 위치에서 +Z로 [mm]만큼 올리기 (기본 30, 예: up 10) (그리퍼 그대로)',
@@ -422,30 +404,18 @@ def build_commands(motions):
                     lambda a: motions.pull_out(float(a[0]) if a else motions.PULL_OUT_MM)),
         'rise': ('(pullout 후) 3층 높이까지 Z로만 수직으로 올라가기 (그리퍼 그대로)',
                  lambda a: motions.rise_to_top()),
-        'sd': ('(pullout 후) 판재 든 채로 작업대 [층=3]으로 이동 -> 미는 방향 축정렬. [층] force = 적재대 안전 확인 건너뜀(시험용)',
-               sd),
-        'sda': ('[시험] (pullout 후) 언로드 정렬 자세(언로드3 Y/자세 + sd 3 높이)로 movej [층=3] [force=안전 확인 건너뜀]',
-                lambda a: motions.go_sd_align(int(a[0]) if a and a[0].isdigit() else 3,
-                                              force='force' in [s.lower() for s in a])),
-        'sdain': ('[시험] (sda 후) 높이/자세 그대로 +X로 똑바로 넣기 [X=560(언로드3 X)] (그리퍼 그대로, 순응 없음)',
-                  lambda a: motions.sd_align_in(3, float(a[0]) if a else None)),
+        'sd': ('(rackout 후) 판재 든 채로 작업대 [층=3]으로 이동 (1, 2층은 sd 3에서 멈춤)', sd),
         'ry': ('그리퍼 끝 위치 그대로 베이스 Y축으로 [도=2] 기울이기 (+ = 판재 앞쪽 숙임, - = 들림, 최대 20도)', ry),
-        'fwd': ('미는 축(그리퍼가 보는 방향, 기울어져 있으면 그 방향)으로 [mm=10] 직선 이동 (+ = 앞, - = 뒤, 자세 그대로)',
-                lambda a: motions.move_tool_z(float(a[0]) if a else 10.0)),
-        'bwd': ('미는 축 반대(그리퍼가 보는 방향의 뒤)로 [mm=10] 직선 이동 (fwd의 반대, 자세 그대로)',
-                lambda a: motions.move_tool_z(-abs(float(a[0])) if a else -10.0)),
         'rx': ('그리퍼 끝 위치 그대로 베이스 X축으로 [도=2] 돌리기 (그리퍼가 +X를 볼 때 판재 좌우로 눕히기, 최대 20도)', rot('x')),
         'rz': ('그리퍼 끝 위치 그대로 베이스 Z축으로 [도=2] 돌리기 (그리퍼가 +X를 볼 때 + = 왼쪽(+Y)으로 돌림, 최대 20도)', rot('z')),
         'rackout': ('(load1 N 후) 지금 위치에서 적재대 빼기만 (그 층으로 이동 안 함). [층]을 주면 지금 위치와 같은 층인지 확인. 다음은 sd 3',
                     rackout),
-        'retreat': ('(insert로 놓은 뒤) 그리퍼만 넣은 길 그대로 거꾸로 빼서 진입 대기 위치로 [층=3] (그리퍼 그대로)',
+        'retreat': ('(insert로 놓은 뒤) 층별 순서(SD_RETREAT_STEPS)로 빼기 [층=3] (그리퍼 그대로)',
                     lambda a: motions.retreat_sd(int(a[0]) if a else 3)),
         'enter': ('(sd 후) 작업대 [층=1]에 다가가기만: sd 3 -> 다가가기 순서 끝(넣기 전, 1층은 up 10 뒤)에서 멈춤. 그리퍼 그대로',
                   lambda a: motions.approach_sd(int(a[0]) if a else 1)),
-        'inpush': ('(enter 후) 지금 위치(입구)부터 넣기만: 3초 멈춤 -> 직선 -> 순응 밀기 -> 그리퍼 열기 [층=2] (1층은 안 됨)',
-                   lambda a: motions.insert_sd(int(a[0]) if a else 2, from_entrance=True)),
-        'insert': ('(sd 후) 작업대 [층=3]에 넣기 (sd에서 정렬한 자세 유지): 좌우 흔들며 진입 -> 순응 제어로 밀어 완료 위치+힘 맞으면 놓기  => True/False',
-                   lambda a: motions.insert_sd(int(a[0]) if a else 3, keep_ori=True)),
+        'insert': ('(sd 후) 작업대 [층=3]에 넣기: 다가가기/입구 -> 직선 -> 순응 밀기 -> 놓기  => True/False',
+                   lambda a: motions.insert_sd(int(a[0]) if a else 3)),
         'load2': ('run_load2 [sd_pos_id(층)=3] (액션과 같은 동작: 빼기 -> 작업대 층)  => True/False',
                   load2),
         'back': ('(적재대 안에서) 그리퍼 열기 -> 진입 전으로 빠짐 -> 진입 높이 -> 준비 -> 홈 [층=3]',

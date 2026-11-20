@@ -1,16 +1,15 @@
-# motions_refactor.py 설명 (코드 리뷰용)
+# motions.py 설명
 
-`motions.py` 최종본(main `565c277`, 2026-11-20 12:24 PR #49 기준)을 리팩토링한 파일입니다. 기능은 그대로 두고, 시험용 코드와 꺼 둔 기능을 빼고, 겹치는 코드를 정리했습니다.
+로봇 구체 동작 코드입니다. 액션 서버(`robot_action_server.py`)가 `run_load1 / run_load / run_load2 / run_unload1 / run_unload2 / run_unload / run_jog / run_gripper / get_current_poses`를 import 해서 씁니다. 좌표와 층별 설정은 `poses.py`, 언로드 좌표는 `unload_poses.py`에 있습니다.
 
-**아직 어디서도 import 하지 않습니다.** 로봇이 실제로 쓰는 파일은 그대로 `motions.py`입니다. 바꿔 끼우는 방법은 맨 아래에 있습니다.
+2026-11-20에 리팩토링한 버전으로 바꿨습니다 (이전 버전은 git 기록 `565c277`, PR #49). 아래 1~3은 그때 바뀐 내용 기록입니다.
 
-## 바뀐 점 요약
-| | 원본 `motions.py` | `motions_refactor.py` |
+| | 이전 | 지금 |
 |---|---|---|
 | 줄 수 | 1649 | 1133 |
 | 구조 | 기능이 섞여 있음 | PART 1 공통 → PART 2 Load(작업 순서) → PART 3 Unload → PART 4 조그/그리퍼 |
 | 액션이 쓰는 함수 9개 | | 이름, 인자, 동작 모두 같음 |
-| 다른 사람 작업 (PART 3, 4, `get_current_poses`) | | 코드, 주석 한 글자도 안 바꿈 |
+| 다른 사람 작업 (PART 3, 4, `get_current_poses`) | | 코드, 주석 그대로 |
 
 ## 1. 뺀 것
 
@@ -42,8 +41,7 @@
 | 7번 "시험용 / 꺼진 기능" 칸 전체: `SD_INSERT_FWD_MM`, `SD_INSERT_PUSH_MM`, `SD_PUSH_START_BEFORE_MM`, `SD_INSERT_ALIGN_X/J/BACK_MM`, `SD_INSERT_PRE_PUSH_STEPS`, `SD_ALIGN_INSERT_LAYERS`, `SD_ALIGN_J/X/DEPTH_X` | 위 꺼 둔 기능에서만 읽음 |
 | `START_POS_READY_X`, `SD_PRE_INSERT_J`, `SD_INSERT_FRONT_J`, `SD_INSERT_DONE_J` | 어디서도 안 읽음 (실측값은 git 기록에 남아 있음) |
 
-- 원본 `motions.py`는 이 값들을 `getattr(..., 기본값)`으로 읽거나 꺼진 분기에서만 읽어서, **정리한 poses로도 원본 액션 동작이 같습니다** (가짜 로봇 48개 상황, 정리 전/후 로봇 명령 같음).
-- 단, 원본 `motions.py` + motion_test의 `sda`, `sdain`은 지운 `SD_ALIGN_*`을 읽어서 이제 에러가 납니다 (꺼 둔 기능 시험 명령).
+- 이전 `motions.py`도 이 값들을 `getattr(..., 기본값)`으로 읽거나 꺼진 분기에서만 읽어서, **정리한 poses로도 원본 액션 동작이 같습니다** (가짜 로봇 48개 상황, 정리 전/후 로봇 명령 같음).
 
 ### 남긴 것
 - `read_fz`: `unload.py`(다른 사람 시험 도구)가 써서 남겼습니다. `read_force_xyz()[2]` 한 줄로 줄였고 결과는 같습니다.
@@ -70,7 +68,7 @@
 ## 3. 같은지 확인한 방법
 | 확인 | 결과 |
 |---|---|
-| 가짜 로봇으로 원본과 이 파일을 같은 상황에서 돌려 로봇 명령(movel/movej/movesj/그리퍼/순응 제어/힘 읽기의 순서와 값)과 결과를 비교 | **48개 상황 모두 같음** |
+| 가짜 로봇으로 이전 버전과 지금 버전을 같은 상황에서 돌려 로봇 명령(movel/movej/movesj/그리퍼/순응 제어/힘 읽기의 순서와 값)과 결과를 비교 | **48개 상황 모두 같음** |
 | └ load1 1~3층 × 판재 있음/없음 | 6 |
 | └ load2 1~3층 × 반력이 생기는 위치 8가지 (일찍 걸림 / 완료 / 끝까지 완료 안 됨) | 24 |
 | └ unload1 → unload2 (층 × 수령대 × 턱 걸림/안 걸림), 조그 3가지(상한 초과 포함), 그리퍼 3가지 | 18 |
@@ -151,14 +149,14 @@ run_load2(sd층)
 | 놓은 뒤 x/y/z 빼기 | 60 |
 | 회전 단계 | 5°/s, 회전 뒤 0.5초 멈춤 |
 
-## 7. 바꿔 끼우려면
-```bash
-cd ~/workspace/genghiskan_ros2/app/ros2_ws/src/sfarm_robot/sfarm_robot
-cp motions.py motions_orig.py        # 원본 백업
-cp motions_refactor.py motions.py    # --symlink-install이라 빌드 없이 액션 서버만 다시 켜면 됨
-# 되돌리기: cp motions_orig.py motions.py
-```
-- 액션(load1/load/load2/unload1/unload2/unload/jog/gripper)과 `unload.py`는 그대로 됩니다.
-- **motion_test에서 안 되는 명령 12개:** `board`, `board_step`, `sd`, `sda`, `sdain`, `ry`, `fwd`, `bwd`, `tilttest`, `inpush`, `insert`, `wtest`. 지운 함수나 인자를 씁니다. 나머지 명령(`load1`, `load2`, `rackout`, `enter`, `retreat`, `pick`, `check` 등)은 됩니다.
-- 처음 한 번은 실제 로봇에서 1~3층 load1 → load2를 천천히 지켜보며 확인해 주세요.
-- 이후 `motions.py`가 바뀌면 이 파일도 다시 맞춰야 합니다.
+## 7. motion_test 바뀐 명령
+| 명령 | 지금 |
+|---|---|
+| `board_step`, `sda`, `sdain`, `fwd`, `bwd`, `inpush` | 뺌 (지운 기능을 쓰던 시험 명령) |
+| `board [층]` | 홈 → 적재대 잡는 곳까지 한 번에 (단계별 멈춤 없음) |
+| `sd [층]` | 작업대 이동만 (축정렬, force 없음) |
+| `insert [층]` | 액션과 같은 넣기 |
+| `ry`, `tilttest` | `tilt_base('y', 도)`로 같은 동작 |
+| `wtest` | 그대로 (옛 무게 기준값 출력만 뺌) |
+
+- 처음 한 번은 실제 로봇에서 1~3층 load1 → load2, unload1 → unload2를 천천히 지켜보며 확인해 주세요.
