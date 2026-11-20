@@ -41,11 +41,14 @@
 1. 주문 접수 → 보드 투입 → 작업(타이머) → 회수 → 수령까지 무인 처리
 2. 보드 부족이나 작업 중 이벤트 등 예외 상황에 대한 대응
 3. 로봇의 상태와 작업 처리 상황을 모니터링할 수 있는 웹 대시보드 개발
-- **데모**: [시연 영상 링크](#)
-- **기획 문서**: [PRD](assets/docs/prd.md)
+- **데모**: [시연 영상](assets/docs/시연영상.mp4)
+- **기획 문서**: [PRD](assets/docs/prd.md) · [작업요청 SQS PRD](assets/docs/prd-work-request-sqs.md) · [티칭 팬던트 PRD](assets/docs/prd-teaching-pendant.md) · [티칭 팬던트 ROS2 PRD](assets/docs/prd-teaching-pendant-ros2.md)
 
-<!-- 데모 GIF가 있다면 여기에 -->
-<!-- <img src="assets/demo.gif" width="600"/> -->
+<div align="center">
+
+<video src="assets/docs/시연영상.mp4" controls width="700"></video>
+
+</div>
 
 ### 업장 구성
 <img src="assets/common/3d_place.png" width="100%" align="center"/>
@@ -80,59 +83,37 @@
 
 <img src="assets/common/system_architect.png" align="center">
 
-- **server**:   
-  - 로봇의 일을 스케쥴링 한다.   
-  - 주문, LOAD, UNLOAD, 정지등 작업 이벤트를 발행한다.
-- **bridge node**: 
-    - 서버로부터 스케쥴을 받아 load, unload 노드에 순차적으로 전달한다.
-    - 노드로부터 완료 및 이슈 알림을 받아 서버에 전달한다.
+- **server**: 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
+- **sfarm_bridge**: `robot-commands` 큐를 구독해 ROS 2 액션으로 실행하고, 실행 결과를 `robot-events` 큐로 서버에 돌려준다.
+- **sfarm_robot**: 두산 M0609 + OnRobot RG2 그리퍼의 실제 LOAD/UNLOAD 동작을 수행하는 액션 서버.
+- **sfarm_joint_streamer**: 로봇 조인트 각도를 `/ws/robot-state` WebSocket으로 스트리밍해 대시보드 3D 뷰어(티칭 팬던트)에 실시간 자세를 반영한다.
+
+로봇과의 통신은 AWS SQS로만 이루어진다 (가상 로봇/시뮬레이터 경로는 제거됨).
 
 <details>
-<summary>📦 디렉터리 구성 펼쳐보기 (프로젝트 마지막에 다시 정리)</summary>
+<summary>📦 디렉터리 구성 펼쳐보기</summary>
 
 ```
 .
-├── backend/                  # FastAPI 서버
-│   ├── app/
-│   │   ├── api/              # REST 라우터 (orders, inventory, simulator, debug)
-│   │   ├── ws/               # /ws/client WebSocket
-│   │   ├── dispatcher/       # 작업 우선순위 판단, 로봇 작업 전송
-│   │   ├── timers/           # 프린터·수령 타이머, 재시작 복원
-│   │   ├── simulator/        # 45초 자동 주문 생성
-│   │   └── models/           # SQLAlchemy 모델
-│   └── alembic/              # DB 마이그레이션
-├── frontend/                 # React + TypeScript + Vite, 2D 업장 화면
-├── ros2_ws/src/              # (다음 단계)
-│   ├── printshop_interfaces/ # 커스텀 action / msg (ExecuteTask, RobotState)
-│   ├── printshop_bridge/     # 서버 ↔ ROS 2 브릿지 노드
-│   └── printshop_executor/   # DSR 기반 LOAD/UNLOAD 작업 실행 노드
-├── docs/PRD.md
-└── docker-compose.yml        # mysql, backend
+├── app/
+│   ├── backend/                   # FastAPI 서버 (레이어드 아키텍처: api → services → repositories → models/core)
+│   │   └── app/
+│   │       ├── api/                # REST 라우터 + /ws/client
+│   │       ├── services/           # 작업요청, 적재대/프린터/수령대, SQS 프로듀서/컨슈머, 타이머, 티칭 팬던트 등
+│   │       ├── repositories/       # DB 접근 계층
+│   │       └── core/               # 설정, DB, 부트스트랩
+│   ├── frontend/                   # React + TypeScript + Vite, 아토믹 디자인(atoms~pages) 대시보드
+│   ├── ros2_ws/src/
+│   │   ├── sfarm_interfaces/       # 커스텀 action / msg
+│   │   ├── sfarm_bridge/           # AWS SQS ↔ ROS 2 액션 브릿지 노드
+│   │   ├── sfarm_robot/            # 두산 M0609 + OnRobot RG2 로봇팔 동작 실행 노드 (LOAD/UNLOAD)
+│   │   └── sfarm_joint_streamer/   # 조인트 상태 → 백엔드 WebSocket 스트리밍 (3D 뷰어용)
+│   └── docker-compose.yml          # MySQL 8.0 + backend
+├── assets/docs/                     # PRD, WBS, 작업 이력 등 기획 문서
+└── README.md
 ```
 
 </details>
-
-<details>
-<summary>🦾 로봇 작업 단계 (가상 로봇 기본 시간 -> 측정하면서 업데이트) -> 웹브라우져 시연 제거할지 고민 중...</summary>
-
-| 단계 | LOAD (초) | UNLOAD (초) |
-|------|:---:|:---:|
-| MOVE_TO_STOCK | 3 | — |
-| PICK_BOARD | 2 | — |
-| CHECK_GRIP | 1 | 1 |
-| MOVE_TO_PRINTER | 3 + 층 보정 | 3 + 층 보정 |
-| PLACE_IN_PRINTER | 2 | — |
-| PICK_FROM_PRINTER | — | 2 |
-| MOVE_TO_PICKUP | — | 4 |
-| PLACE_AT_PICKUP | — | 2 |
-| RETURN_HOME | 3 | 3 |
-| **합계** | **14~16** | **15~17** |
-
-층 보정: 1층 0초, 2층 +1초, 3층 +2초.
-
-</details>
-
-
 
 ## 🚀 시작하기
 
