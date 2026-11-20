@@ -17,6 +17,12 @@ ros2 run sfarm_joint_streamer joint_streamer --ros-args \
     해당하지 않으면 무시한다.
   - 실제 조인트 이름이 다르게 들어오면(예: prefix) joint_name_prefix 또는
     joint_name_overrides 파라미터로 매핑을 조정한다 (아래 _build_source_names 참고).
+  - RG2 그리퍼는 /joint_states에 조인트가 없고 컨트롤박스 디지털 출력(DO1=닫기,
+    DO2=열기, sfarm_robot.motions.grip_close/grip_open)으로 제어된다. 그래서 두산
+    드라이버의 io/get_ctrl_box_digital_output 서비스를 주기적으로 조회해 열림/닫힘을
+    판정하고, payload의 gripper.width_mm(열림=110, 닫힘=1 기본 - 보드 두께)로 실어 보낸다.
+    서비스가 없거나(드라이버 미기동, dsr_msgs2 미설치) 상태가 모호하면 gripper 필드를
+    생략한다 -> 프론트 뷰어는 마지막 폭을 유지한다.
 """
 from __future__ import annotations
 
@@ -35,6 +41,11 @@ from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
 
 try:
+    from dsr_msgs2.srv import GetCtrlBoxDigitalOutput
+except ImportError:  # pragma: no cover - 두산 메시지 패키지가 없어도 조인트 스트리밍은 동작
+    GetCtrlBoxDigitalOutput = None
+
+try:
     import websocket  # websocket-client (pip: websocket-client, import: websocket)
 except ImportError:  # pragma: no cover - 설치 안 됐을 때도 노드 자체는 죽지 않게
     websocket = None
@@ -45,6 +56,7 @@ DEFAULT_JOINT_NAMES = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'j
 # 계약에 쓰인 값 그대로 보낸다(임의로 바꾸지 않음).
 PAYLOAD_SOURCE = 'ros2_sfarm_bridge'
 ANGLE_UNIT = 'rad'
+GRIPPER_TYPE = 'rg2'
 
 
 def load_dotenv() -> None:
@@ -276,6 +288,49 @@ class JointStreamerNode(Node):
             ).value
         )
 
+        # ---- RG2 그리퍼(컨트롤박스 DO) 상태 조회 설정
+        self.gripper_enabled = bool(
+            self.declare_parameter(
+                'gripper_enabled',
+                os.getenv('GRIPPER_STREAM_ENABLED', 'true').lower() in ('1', 'true', 'yes'),
+            ).value
+        )
+        self.gripper_do_service = str(
+            self.declare_parameter(
+                'gripper_do_service',
+                os.getenv(
+                    'GRIPPER_DO_SERVICE',
+                    '/dsr01/dsr_controller2/io/get_ctrl_box_digital_output',
+                ),
+            ).value
+        )
+        self.gripper_close_do = int(
+            self.declare_parameter(
+                'gripper_close_do', int(os.getenv('GRIPPER_CLOSE_DO', '1'))
+            ).value
+        )
+        self.gripper_open_do = int(
+            self.declare_parameter(
+                'gripper_open_do', int(os.getenv('GRIPPER_OPEN_DO', '2'))
+            ).value
+        )
+        self.gripper_open_width_mm = float(
+            self.declare_parameter(
+                'gripper_open_width_mm', float(os.getenv('GRIPPER_OPEN_WIDTH_MM', '110.0'))
+            ).value
+        )
+        self.gripper_closed_width_mm = float(
+            self.declare_parameter(
+                'gripper_closed_width_mm',
+                float(os.getenv('GRIPPER_CLOSED_WIDTH_MM', '1.0')),
+            ).value
+        )
+        self.gripper_poll_rate_hz = float(
+            self.declare_parameter(
+                'gripper_poll_rate_hz', float(os.getenv('GRIPPER_POLL_RATE_HZ', '5.0'))
+            ).value
+        )
+
         if self.publish_rate_hz <= 0.0:
             self.get_logger().warning(
                 f'publish_rate_hz={self.publish_rate_hz} 는 유효하지 않아 10.0으로 대체합니다'
@@ -313,11 +368,112 @@ class JointStreamerNode(Node):
         period_sec = 1.0 / self.publish_rate_hz
         self.timer = self.create_timer(period_sec, self._on_timer)
 
+        # 그리퍼 상태: DO 인덱스 -> 마지막으로 읽은 값(1=ON, 0=OFF). None이면 아직 모름.
+        self._gripper_lock = threading.Lock()
+        self._do_values: dict[int, int | None] = {
+            self.gripper_close_do: None,
+            self.gripper_open_do: None,
+        }
+        self._do_inflight: set[int] = set()
+        self._gripper_client = None
+        self._warned_gripper_unavailable = False
+        self._setup_gripper_polling()
+
         self.get_logger().info(
             f'[joint_streamer] "{self.joint_states_topic}" 구독 시작, '
             f'{self.publish_rate_hz}Hz로 {log_url} 에 전송 '
             f'(source names={list(self._source_names.values())})'
         )
+
+    # ---------------------------------------------------------------- gripper
+    def _setup_gripper_polling(self) -> None:
+        if not self.gripper_enabled:
+            self.get_logger().info('[joint_streamer] 그리퍼 상태 스트리밍 비활성화')
+            return
+        if GetCtrlBoxDigitalOutput is None:
+            self.get_logger().warning(
+                '[joint_streamer] dsr_msgs2를 import할 수 없어 그리퍼 상태를 보내지 않습니다 '
+                '(두산 워크스페이스 setup.bash를 source 했는지 확인)'
+            )
+            return
+        if self.gripper_poll_rate_hz <= 0.0:
+            self.gripper_poll_rate_hz = 5.0
+        self._gripper_client = self.create_client(
+            GetCtrlBoxDigitalOutput, self.gripper_do_service
+        )
+        self.gripper_timer = self.create_timer(
+            1.0 / self.gripper_poll_rate_hz, self._on_gripper_timer
+        )
+        self.get_logger().info(
+            f'[joint_streamer] 그리퍼 DO 조회 시작: {self.gripper_do_service} '
+            f'(close=DO{self.gripper_close_do}, open=DO{self.gripper_open_do}, '
+            f'{self.gripper_poll_rate_hz}Hz)'
+        )
+
+    def _on_gripper_timer(self) -> None:
+        client = self._gripper_client
+        if client is None:
+            return
+        if not client.service_is_ready():
+            if not self._warned_gripper_unavailable:
+                self.get_logger().warning(
+                    f'[joint_streamer] 그리퍼 DO 서비스 "{self.gripper_do_service}" 없음; '
+                    '그리퍼 상태 없이 조인트만 전송합니다 (gripper_do_service 파라미터 확인)'
+                )
+                self._warned_gripper_unavailable = True
+            with self._gripper_lock:
+                for idx in self._do_values:
+                    self._do_values[idx] = None
+            return
+        if self._warned_gripper_unavailable:
+            self.get_logger().info('[joint_streamer] 그리퍼 DO 서비스 연결됨')
+            self._warned_gripper_unavailable = False
+
+        for idx in self._do_values:
+            with self._gripper_lock:
+                if idx in self._do_inflight:
+                    continue  # 이전 응답이 아직 안 왔으면 요청을 쌓지 않는다
+                self._do_inflight.add(idx)
+            req = GetCtrlBoxDigitalOutput.Request()
+            req.index = idx
+            future = client.call_async(req)
+            future.add_done_callback(
+                lambda fut, index=idx: self._on_do_response(index, fut)
+            )
+
+    def _on_do_response(self, index: int, future) -> None:
+        value: int | None = None
+        try:
+            res = future.result()
+            if res is not None and res.success:
+                # 드라이버는 Drfl->get_digital_output()의 bool을 그대로 넣는다 (1=ON).
+                value = 1 if int(res.value) else 0
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f'[joint_streamer] DO{index} 조회 실패: {exc}')
+        with self._gripper_lock:
+            self._do_inflight.discard(index)
+            self._do_values[index] = value
+
+    def _gripper_payload(self) -> dict | None:
+        """Convert ctrl-box DO state to RG2 width; None(필드 생략) if undetermined."""
+        with self._gripper_lock:
+            close_on = self._do_values.get(self.gripper_close_do)
+            open_on = self._do_values.get(self.gripper_open_do)
+        if close_on is None or open_on is None:
+            return None
+        if close_on and not open_on:
+            return {
+                'type': GRIPPER_TYPE,
+                'width_mm': self.gripper_closed_width_mm,
+                'is_gripping': True,
+            }
+        if open_on and not close_on:
+            return {
+                'type': GRIPPER_TYPE,
+                'width_mm': self.gripper_open_width_mm,
+                'is_gripping': False,
+            }
+        return None  # 둘 다 ON/OFF인 과도 상태 -> 마지막 폭 유지
 
     def _build_source_names(self) -> dict[str, str]:
         """canonical joint 이름 -> /joint_states 안에서 실제로 찾을 이름 매핑을 만든다.
@@ -393,6 +549,9 @@ class JointStreamerNode(Node):
             'joints': dict(self._last_values),
             'source': PAYLOAD_SOURCE,
         }
+        gripper = self._gripper_payload()
+        if gripper is not None:
+            payload['gripper'] = gripper
         self._sender.enqueue_latest(payload)
 
     def destroy_node(self) -> None:

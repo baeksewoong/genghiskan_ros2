@@ -130,3 +130,17 @@ ros2 run sfarm_joint_streamer joint_streamer --ros-args \
 - **WebSocket이 계속 재연결 로그만 찍을 때**: 백엔드 `/ws/robot-state` 엔드포인트가 떠 있는지,
   `ws_token`이 백엔드가 기대하는 값과 일치하는지 확인하세요. 노드는 재연결에 실패해도 죽지
   않고 지수 백오프(`ws_reconnect_min_sec`~`ws_reconnect_max_sec`)로 계속 재시도합니다.
+
+---
+
+## 그리퍼(RG2) 상태 스트리밍
+
+RG2는 `/joint_states`에 조인트가 없고 컨트롤박스 디지털 출력(DO1=닫기, DO2=열기)으로 제어되므로,
+노드가 두산 드라이버 서비스 `/dsr01/dsr_controller2/io/get_ctrl_box_digital_output`을 5Hz로 조회해
+payload에 `gripper: {type: "rg2", width_mm, is_gripping}`를 실어 보냅니다(열림 110mm / 닫힘 1mm = 보드 두께).
+홈 화면 3D 뷰어는 이 값으로 그리퍼를 열고 닫습니다.
+
+- 두산 워크스페이스(`dsr_msgs2`)를 source 한 셸에서 실행해야 합니다. 없으면 그리퍼 필드만 생략됩니다.
+- 서비스가 없거나 DO 상태가 모호하면(둘 다 ON/OFF) 필드를 생략 → 뷰어는 마지막 폭을 유지합니다.
+- 파라미터: `gripper_enabled`, `gripper_do_service`, `gripper_close_do`, `gripper_open_do`,
+  `gripper_open_width_mm`, `gripper_closed_width_mm`, `gripper_poll_rate_hz`
