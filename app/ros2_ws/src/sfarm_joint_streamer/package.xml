@@ -14,6 +14,8 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <!-- RG2 그리퍼 상태(컨트롤박스 DO) 조회용. 없으면 그리퍼 필드만 생략하고 동작한다. -->
+  <exec_depend>dsr_msgs2</exec_depend>
   <!-- pip 패키지 websocket-client (import name: websocket).
        rosdep 키가 이 환경에서 해석되지 않으면: pip install websocket-client -->
   <exec_depend>python3-websocket-client</exec_depend>
