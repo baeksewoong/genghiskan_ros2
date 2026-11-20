@@ -14,10 +14,10 @@ interface DashboardTemplateProps {
   modal?: ReactNode;
 }
 
-/** 홈 화면(키오스크) 레이아웃. 매장 브랜딩/시계 헤더 + 작업요청 히어로 +
- * 적재대/작업대/수령대 현황판 + 로봇 3D 뷰어 + 작업 대기 중 큐를 화면 전체를
- * 채우는 하나의 키오스크로 배치한다. 데이터/상태는 전혀 소유하지 않고
- * ReactNode만 꽂아 넣는 순수 레이아웃. */
+/** 홈 화면(키오스크) 레이아웃. 매장 브랜딩/시계 헤더 아래를 좌우 2단으로 나눠,
+ * 왼쪽에는 로봇 3D 뷰어(실시간 상태)를, 오른쪽에는 작업요청 히어로 + 적재대/작업대/
+ * 수령대 현황판 + 작업 대기 중 큐 등 나머지 키오스크 UI를 세로로 쌓아 배치한다.
+ * 데이터/상태는 전혀 소유하지 않고 ReactNode만 꽂아 넣는 순수 레이아웃. */
 export function DashboardTemplate({
   orderForm,
   boardStock,
@@ -42,14 +42,16 @@ export function DashboardTemplate({
         <Clock />
       </header>
       <main className="kiosk-main">
-        <section className="kiosk-hero">{orderForm}</section>
-        <section className="kiosk-status-board">
-          {boardStock}
-          {printers}
-          {receivePos}
-        </section>
-        <section className="kiosk-arm-viewer">{armViewer}</section>
-        {waitingQueue}
+        <section className="kiosk-robot-column">{armViewer}</section>
+        <div className="kiosk-content-column">
+          <section className="kiosk-hero">{orderForm}</section>
+          <section className="kiosk-status-board">
+            {boardStock}
+            {printers}
+            {receivePos}
+          </section>
+          {waitingQueue}
+        </div>
       </main>
       {modal}
     </div>

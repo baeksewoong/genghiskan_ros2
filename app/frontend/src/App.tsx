@@ -16,14 +16,35 @@ function normalizeHash(hash: string): string {
   return hash === "" ? "#/" : hash;
 }
 
+const NAV_OPEN_STORAGE_KEY = "genghiskan.nav-open";
+
+/** 네비게이션 토글 상태를 localStorage에 저장해, 운영자가 접어둔 채로 새로고침해도
+ * 키오스크 화면 공간을 다시 뺏기지 않게 한다. */
+function loadNavOpen(): boolean {
+  try {
+    return localStorage.getItem(NAV_OPEN_STORAGE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 export default function App() {
   const [hash, setHash] = useState(normalizeHash(location.hash));
+  const [navOpen, setNavOpen] = useState(loadNavOpen);
 
   useEffect(() => {
     const onHashChange = () => setHash(normalizeHash(location.hash));
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(NAV_OPEN_STORAGE_KEY, navOpen ? "1" : "0");
+    } catch {
+      // 프라이빗 모드 등 저장 불가 시 무시 — 토글 상태는 이번 세션 동안만 유지된다.
+    }
+  }, [navOpen]);
 
   const isHome = hash === "#/";
   const otherPage =
@@ -37,7 +58,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <NavSidebar routes={ROUTES} currentPath={hash} />
+      <NavSidebar routes={ROUTES} currentPath={hash} open={navOpen} onToggle={() => setNavOpen((v) => !v)} />
       <div className="app-shell-content">
         {/* 홈(DashboardPage)은 다른 라우트로 이동해도 언마운트하지 않고 CSS로만 숨긴다.
             홈에 있는 3D 로봇 뷰어(DoosanArmViewer)와 그 WebSocket 구독(useLiveState)이

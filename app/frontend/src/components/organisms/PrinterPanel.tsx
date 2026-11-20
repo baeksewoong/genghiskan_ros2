@@ -61,12 +61,16 @@ export function PrinterPanel({ printers }: PrinterPanelProps) {
             .sort((a, b) => b.slot - a.slot)
             .map((p) => (
               <li key={p.slot}>
-                <span className="printer-slot">
-                  {p.slot}층
+                <div className="slot-row-top">
+                  <span className="printer-slot">{p.slot}층</span>
+                  <Pill variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Pill>
+                </div>
+                {/* 손님명/타이머가 없어도 칸을 항상 렌더링해, 슬롯마다 데이터 유무로
+                 * 행 높이가 들쭉날쭉해지지 않게 한다 (높이는 .slot-row-sub의 min-height가 보장). */}
+                <div className="slot-row-sub">
                   {p.customer_name && <span className="printer-customer-name">{p.customer_name}</span>}
                   {p.status === "PRINTING" && p.timer_ends_at && <PrinterTimer endsAt={p.timer_ends_at} />}
-                </span>
-                <Pill variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Pill>
+                </div>
               </li>
             ))}
         </ul>

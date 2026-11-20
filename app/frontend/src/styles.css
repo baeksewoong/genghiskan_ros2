@@ -244,6 +244,46 @@ body {
   background: #1a1d24;
   border-right: 1px solid #2a2e37;
   padding: 1rem 0;
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+
+/* 접힌 상태 — 토글 버튼만 남기고 폭을 최소화해 화면 공간을 확보한다. */
+.nav-sidebar.collapsed {
+  width: 48px;
+  padding: 0.75rem 0;
+}
+
+.nav-toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.75rem 0.6rem;
+}
+
+.nav-sidebar.collapsed .nav-toggle-row {
+  justify-content: center;
+  padding: 0 0 0.6rem;
+}
+
+.nav-toggle {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #20242d;
+  border: 1px solid #2a2e37;
+  color: #9aa0ab;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nav-toggle:hover {
+  background: #262b35;
+  color: #e6e6e6;
 }
 
 .nav-sidebar h2 {
@@ -298,15 +338,69 @@ body {
 }
 
 .board-stock-list li,
-.receive-pos-list li,
-.printer-list li,
 .order-queue-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   background: #20242d;
   border-radius: 6px;
+}
+
+.board-stock-list li > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-stock-list li > .pill {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 프린터/수령대 항목은 슬롯 번호+상태를 한 줄, 손님명/타이머/완료 시각 같이
+ * 길이가 들쭉날쭉한 보조 정보를 그 아래 한 줄로 나눈다. 보조 정보가 길어져도
+ * 슬롯 라벨이나 상태 Pill·버튼이 찌그러지지 않는다. */
+.receive-pos-list li,
+.printer-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.75rem;
+  background: #20242d;
+  border-radius: 6px;
+}
+
+.slot-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.slot-row-top > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot-row-top > .pill,
+.slot-row-top > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.slot-row-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 0.15rem;
+  column-gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #9aa0ab;
 }
 
 .pickup-customer-name {
@@ -328,12 +422,6 @@ body {
 .receive-pos-slot,
 .printer-slot {
   font-weight: 600;
-}
-
-.printer-slot {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
 }
 
 .printer-customer-name {
@@ -790,7 +878,9 @@ button:disabled {
  * =================================================================== */
 
 .kiosk {
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
   background: radial-gradient(circle at 20% -10%, #1b2436 0%, #0f1115 55%);
 }
 
@@ -799,7 +889,8 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.25rem 2rem;
+  padding: 0.85rem 2rem;
+  flex-shrink: 0;
   background: linear-gradient(180deg, #1c2029 0%, #171a21 100%);
   border-bottom: 1px solid #2a2e37;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -852,51 +943,107 @@ button:disabled {
 
 .kiosk-main {
   display: flex;
-  flex-direction: column;
-  gap: 1.75rem;
-  padding: 2rem;
+  align-items: stretch;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem;
   flex: 1;
+  min-height: 0;
+}
+
+/* 로봇 실시간 상태 — 화면 왼쪽. 뷰어가 열 높이에 맞춰 꽉 차도록 세로 flex로 둔다. */
+.kiosk-robot-column {
+  flex: 0 0 40%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.kiosk-robot-column .arm-viewer-panel {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+/* 작업요청 히어로 + 현황판 + 대기 큐 등 나머지 키오스크 UI — 화면 오른쪽.
+ * 전체가 뷰포트 높이 안에 한 번에 들어오도록, 히어로/현황판은 내용만큼만 차지하고
+ * 마지막(대기 큐)이 남은 공간을 채우며 넘치면 내부 스크롤되게 한다. */
+.kiosk-content-column {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.kiosk-content-column > .kiosk-hero,
+.kiosk-content-column > .kiosk-status-board {
+  flex-shrink: 0;
+}
+
+.kiosk-content-column > .order-queue-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.kiosk-content-column > .order-queue-panel .order-queue-list {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
 }
 
 /* 작업요청 히어로 — 화면의 주인공. 다른 패널과 동급이 아니라 가장 눈에
  * 띄는 큰 터치 타겟이어야 한다. */
 .order-hero {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  text-align: center;
-  gap: 0.6rem;
-  padding: 3rem 2rem;
+  justify-content: space-between;
+  text-align: left;
+  gap: 1rem;
+  padding: 0.9rem 1.5rem;
   background: linear-gradient(160deg, #23304f 0%, #1a1d24 70%);
   border: 1px solid #35446e;
-  border-radius: 24px;
+  border-radius: 16px;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 16px 40px rgba(0, 0, 0, 0.4);
+    0 10px 24px rgba(0, 0, 0, 0.35);
 }
 
 .order-hero-icon {
-  font-size: 2.4rem;
+  font-size: 1.5rem;
   line-height: 1;
+  flex-shrink: 0;
+}
+
+.order-hero-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .order-hero-title {
   margin: 0;
-  font-size: 2rem;
+  font-size: 1.15rem;
   font-weight: 800;
   letter-spacing: -0.01em;
   color: #f4f6ff;
 }
 
 .order-hero-sub {
-  margin: 0 0 0.75rem;
-  font-size: 1.05rem;
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
   color: #aab3c5;
 }
 
 .order-hero-button {
-  padding: 1.25rem 3rem;
-  font-size: 1.35rem;
+  flex-shrink: 0;
+  padding: 0.65rem 1.5rem;
+  font-size: 1rem;
   font-weight: 700;
   border-radius: 999px;
   background: linear-gradient(135deg, #2f6fed 0%, #5a8dfb 100%);
@@ -919,16 +1066,19 @@ button:disabled {
   outline-offset: 3px;
 }
 
-/* 적재대/작업대/수령대 — 하나의 "현황판" 영역으로 묶어서 가로 배치. */
+/* 적재대/작업대/수령대 — 하나의 "현황판" 영역으로 묶어서 가로 배치.
+ * 고정 3열이 아니라 auto-fit으로 둬서, 왼쪽 로봇 뷰어가 차지하는 만큼 오른쪽
+ * 열의 실제 가용 폭이 줄어들어도(화면 너비가 아니라) 카드가 찌그러져
+ * 글자가 세로로 쪼개지지 않고 자연스럽게 2열/1열로 줄어들게 한다. */
 .kiosk-status-board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.25rem;
   align-items: start;
 }
 
 .kiosk-card {
-  padding: 1.5rem;
+  padding: 1.1rem 1.25rem;
   border-radius: 16px;
   background: linear-gradient(180deg, #1d2129 0%, #171a21 100%);
   box-shadow:
@@ -940,8 +1090,8 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 1.1rem;
-  margin-bottom: 1rem;
+  font-size: 1.05rem;
+  margin: 0 0 0.6rem;
 }
 
 .kiosk-card-icon {
@@ -953,16 +1103,23 @@ button:disabled {
 .kiosk-card .printer-list li,
 .kiosk-card .receive-pos-list li,
 .kiosk-card .order-queue-list li {
-  padding: 0.9rem 1.1rem;
+  padding: 0.6rem 0.9rem;
   border-radius: 10px;
   background: #242933;
-  font-size: 1.05rem;
+  font-size: 1rem;
 }
 
 .kiosk-card .board-stock-slot,
 .kiosk-card .printer-slot,
 .kiosk-card .receive-pos-slot {
   font-size: 1.15rem;
+}
+
+.kiosk-card .slot-row-sub {
+  font-size: 0.9rem;
+  /* 손님명/타이머/완료 시각 등 보조 정보가 있을 때만 채워지지만, 자리는 항상
+   * 예약해둬서 옆/아래 칸과 높이가 데이터에 따라 들쭉날쭉해지지 않게 한다. */
+  min-height: 1.3em;
 }
 
 .kiosk-card .pill {
@@ -975,11 +1132,14 @@ button:disabled {
   font-size: 1.05rem;
 }
 
+/* 수령하기 버튼도 같은 칸에 있는 상태 Pill과 크기·모양을 맞춰서(둥근 pill,
+ * 같은 패딩/글자 크기) 디자인 통일감을 준다 — 단, 터치 액션임을 알 수 있게
+ * 파란색은 유지한다. */
 .kiosk-card .receive-pos-list button {
-  padding: 0.65rem 1.4rem;
-  font-size: 1rem;
-  font-weight: 700;
-  border-radius: 10px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-radius: 999px;
 }
 
 .kiosk-card .receive-pos-full {
@@ -987,13 +1147,16 @@ button:disabled {
   text-align: center;
 }
 
-@media (max-width: 1100px) {
-  .kiosk-status-board {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 900px) {
+  /* 모바일 폭에서는 로봇 뷰어 + 전체 키오스크 UI를 한 화면에 다 욱여넣을 수
+   * 없으므로, 이 구간에서만 세로 스크롤을 허용한다(데스크톱 키오스크 화면은
+   * 여전히 스크롤 없이 한눈에 들어온다). */
+  .kiosk {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .kiosk-header {
     flex-wrap: wrap;
     padding: 1rem 1.25rem;
@@ -1004,21 +1167,42 @@ button:disabled {
   }
 
   .kiosk-main {
+    flex-direction: column;
+    align-items: stretch;
     padding: 1.25rem;
     gap: 1.25rem;
+    min-height: auto;
+  }
+
+  .kiosk-robot-column {
+    flex-basis: auto;
+  }
+
+  .kiosk-robot-column .arm-viewer-panel {
+    flex: none;
+    height: 360px;
+  }
+
+  .kiosk-content-column > .order-queue-panel {
+    flex: none;
+  }
+
+  .kiosk-content-column > .order-queue-panel .order-queue-list {
+    max-height: 260px;
   }
 
   .order-hero {
-    padding: 2rem 1.25rem;
+    flex-wrap: wrap;
+    padding: 1rem 1.25rem;
   }
 
   .order-hero-title {
-    font-size: 1.5rem;
+    font-size: 1.05rem;
   }
 
   .order-hero-button {
     width: 100%;
-    padding: 1.1rem 1.5rem;
-    font-size: 1.15rem;
+    padding: 0.85rem 1.5rem;
+    font-size: 1.05rem;
   }
 }

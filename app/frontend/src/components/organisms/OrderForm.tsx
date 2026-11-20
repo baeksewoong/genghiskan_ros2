@@ -28,8 +28,10 @@ export function OrderForm({ onOrder, error }: OrderFormProps) {
       <span className="order-hero-icon" aria-hidden="true">
         ✨
       </span>
-      <h2 className="order-hero-title">나만의 3D 프린트 작업요청</h2>
-      <p className="order-hero-sub">원하는 모양을 고르고 터치 한 번으로 작업을 시작하세요</p>
+      <div className="order-hero-text">
+        <h2 className="order-hero-title">나만의 3D 프린트 작업요청</h2>
+        <p className="order-hero-sub">원하는 모양을 고르고 터치 한 번으로 작업을 시작하세요</p>
+      </div>
       <Button className="order-hero-button" onClick={() => setOpen(true)}>
         🖨️&nbsp;&nbsp;작업요청 시작하기
       </Button>

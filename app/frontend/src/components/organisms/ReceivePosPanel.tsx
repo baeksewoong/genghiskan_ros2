@@ -65,8 +65,22 @@ export function ReceivePosPanel({ positions, orders, onPickUp }: ReceivePosPanel
                 const order = p.current_order_id !== null ? orderById.get(p.current_order_id) : undefined;
                 return (
                   <li key={p.pos_id}>
-                    <span className="receive-pos-info">
+                    <div className="slot-row-top">
                       <span className="receive-pos-slot">{p.pos_id}번</span>
+                      {p.status === "OCCUPIED" && p.current_order_id !== null ? (
+                        <button
+                          onClick={() => handlePickUp(p.current_order_id!)}
+                          disabled={pickingUpId === p.current_order_id}
+                        >
+                          {pickingUpId === p.current_order_id ? "수령 처리중..." : "수령하기"}
+                        </button>
+                      ) : (
+                        <Pill variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Pill>
+                      )}
+                    </div>
+                    {/* 주문이 없어도 칸을 항상 렌더링해, 칸마다 데이터 유무로 행 높이가
+                     * 들쭉날쭉해지지 않게 한다 (높이는 .slot-row-sub의 min-height가 보장). */}
+                    <div className="slot-row-sub">
                       {p.current_order_id !== null && (
                         <>
                           <span className="pickup-customer-name">
@@ -80,17 +94,7 @@ export function ReceivePosPanel({ positions, orders, onPickUp }: ReceivePosPanel
                           )}
                         </>
                       )}
-                    </span>
-                    {p.status === "OCCUPIED" && p.current_order_id !== null ? (
-                      <button
-                        onClick={() => handlePickUp(p.current_order_id!)}
-                        disabled={pickingUpId === p.current_order_id}
-                      >
-                        {pickingUpId === p.current_order_id ? "수령 처리중..." : "수령하기"}
-                      </button>
-                    ) : (
-                      <Pill variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Pill>
-                    )}
+                    </div>
                   </li>
                 );
               })}
