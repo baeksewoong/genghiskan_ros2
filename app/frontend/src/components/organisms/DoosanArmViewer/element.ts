@@ -14,7 +14,15 @@ import type {
  */
 export class DoosanArmViewerElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ["assets-base-url", "gripper", "angle-unit", "show-grid", "show-axes", "camera-preset"];
+    return [
+      "assets-base-url",
+      "gripper",
+      "angle-unit",
+      "show-grid",
+      "show-stations",
+      "show-axes",
+      "camera-preset",
+    ];
   }
 
   private viewer: ViewerInstance | null = null;
@@ -47,6 +55,8 @@ export class DoosanArmViewerElement extends HTMLElement {
     if (!this.viewer) return;
     if (name === "show-grid") {
       this.viewer.setShowGrid(newVal !== "false");
+    } else if (name === "show-stations") {
+      this.viewer.setShowStations(newVal !== "false");
     } else if (name === "show-axes") {
       this.viewer.setShowAxes(newVal !== "false");
     } else if (name === "camera-preset" && newVal) {
@@ -89,6 +99,7 @@ export class DoosanArmViewerElement extends HTMLElement {
       gripper: (this.getAttribute("gripper") as GripperType) || "none",
       angleUnit: (this.getAttribute("angle-unit") as AngleUnit) || "rad",
       showGrid: this.getAttribute("show-grid") !== "false",
+      showStations: this.getAttribute("show-stations") !== "false",
       showAxes: this.getAttribute("show-axes") !== "false",
       cameraPreset: (this.getAttribute("camera-preset") as CameraPreset) || "iso",
       onStatusChange: (status) => {

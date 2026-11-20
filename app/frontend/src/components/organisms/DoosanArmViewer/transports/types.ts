@@ -75,6 +75,8 @@ export interface DoosanViewerOptions {
   backgroundColor?: string;
   /** Show ground grid (default: true). */
   showGrid?: boolean;
+  /** Show the loading-rack (적재대, left) and workbench+receiving-tray (작업대/수령대, right) schematic furniture (default: true). */
+  showStations?: boolean;
   /** Show base & TCP RGB=XYZ coordinate axes (default: true). */
   showAxes?: boolean;
   /** Clamp incoming joint angles to URDF limits (default: true). */
@@ -98,6 +100,7 @@ export interface ViewerInstance {
   ): boolean;
   setCameraPreset(preset: CameraPreset): void;
   setShowGrid(visible: boolean): void;
+  setShowStations(visible: boolean): void;
   setShowAxes(visible: boolean): void;
   goHome(
     target?: DoosanHomeTarget,

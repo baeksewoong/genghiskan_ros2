@@ -10,6 +10,7 @@ export function createDoosanM0609Viewer(
 
 export { DoosanM0609SceneViewer } from "./core/viewer";
 export { M0609RobotRig } from "./core/robot_rig";
+export { SceneStations } from "./core/stations";
 export { JointStateBuffer } from "./core/state_buffer";
 export {
   DOOSAN_HOME_POSES_DEG,

@@ -51,7 +51,7 @@ export function PrinterPanel({ printers }: PrinterPanelProps) {
         <span className="kiosk-card-icon" aria-hidden="true">
           🖨️
         </span>
-        작업대 현황
+        작업대 현황{printers && ` (${printers.length})`}
       </h2>
       {!printers ? (
         <p>불러오는 중...</p>

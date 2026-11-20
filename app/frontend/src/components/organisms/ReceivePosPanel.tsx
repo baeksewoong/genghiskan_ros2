@@ -52,7 +52,7 @@ export function ReceivePosPanel({ positions, orders, onPickUp }: ReceivePosPanel
         <span className="kiosk-card-icon" aria-hidden="true">
           📬
         </span>
-        수령대 현황
+        수령대 현황{positions && ` (${positions.length})`}
       </h2>
       {!positions ? (
         <p>불러오는 중...</p>

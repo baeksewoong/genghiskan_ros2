@@ -26,7 +26,7 @@ export function BoardStockPanel({ slots }: BoardStockPanelProps) {
         <span className="kiosk-card-icon" aria-hidden="true">
           📦
         </span>
-        적재대 현황
+        적재대 현황{slots && ` (${slots.length})`}
       </h2>
       {!slots ? (
         <p>불러오는 중...</p>
