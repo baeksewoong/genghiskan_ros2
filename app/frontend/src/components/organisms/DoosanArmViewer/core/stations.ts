@@ -12,45 +12,7 @@ import * as THREE from "three";
  * rig. With the default "front" camera preset (eye +X looking toward -X,
  * up +Y), the viewer's left is +Z and right is -Z, so the workbench sits
  * at +Z and the loading rack at -Z.
- *
- * 위치와 층 높이는 실제 로봇 좌표(sfarm_robot/poses.py)에서 계산한다 (REAL_* 아래).
- * 로봇 베이스 = THREE 원점, ROS (x, y, z) mm -> THREE (x, z, -y) m (robot_rig.ts의 -90도 X 회전과 같음).
  */
-
-// ---- 실제 로봇 좌표 (로봇 베이스 기준 mm, 2026-11-20 poses.py / 실제 로봇 실측)
-/** 적재대 잡는 위치 START_POS_PICK_X[1..3] (TCP = 판재 앞 손잡이). */
-const REAL_RACK_PICK_MM: [number, number, number][] = [
-  [464.83, 182.87, 155.58], // 1층
-  [464.81, 189.08, 248.1], // 2층
-  [464.81, 189.08, 340.6], // 3층
-];
-/** 작업대(sd) 넣기 끝 위치 = 판재를 놓는 곳 (TCP = 판재 앞 손잡이). 1층은 다가가기 끝, 2, 3층은 SD_INSERT_DONE_X. */
-const REAL_SD_PLACE_MM: [number, number, number][] = [
-  [583.8, -189.7, 110.0], // 1층
-  [563.53, -193.96, 164.96], // 2층
-  [574.0, -168.6, 305.6], // 3층
-];
-/** 잡는 TCP가 판(tray) 윗면보다 얼마나 위인지 (mm). 손잡이 높이에 맞춰 조정. */
-const TCP_ABOVE_TRAY_MM = 10;
-/** 판 앞쪽 끝(로봇 쪽)이 잡는 TCP X보다 얼마나 앞인지 (mm, +면 로봇에서 더 멀리). */
-const TRAY_FRONT_FROM_TCP_MM = 0;
-
-const mean = (v: number[]): number => v.reduce((a, b) => a + b, 0) / v.length;
-/** 판 윗면 높이들(m) -> 층별 TierSpec (다리는 아래 판 윗면에서 이 판 아랫면까지). */
-function tiersFromTops(topsM: number[], spec: Omit<TierSpec, "baseY" | "legHeight">): TierSpec[] {
-  let prevTop = 0;
-  return topsM.map((top) => {
-    const tier = { ...spec, baseY: prevTop, legHeight: Math.max(0.005, top - spec.trayThickness - prevTop) };
-    prevTop = top;
-    return tier;
-  });
-}
-const trayTopsM = (pts: [number, number, number][]): number[] => pts.map((p) => (p[2] - TCP_ABOVE_TRAY_MM) / 1000);
-/** 판 가운데의 THREE (X, Z): 앞쪽 끝 = TCP X (+여유), 가운데 = 앞 + 판 길이(X) / 2. */
-function stationCenter(pts: [number, number, number][], trayWidthM: number): [number, number] {
-  const frontX = (mean(pts.map((p) => p[0])) + TRAY_FRONT_FROM_TCP_MM) / 1000;
-  return [frontX + trayWidthM / 2, -mean(pts.map((p) => p[1])) / 1000];
-}
 
 const LEG_COLORS = [0xdc2626, 0xfacc15, 0x2563eb, 0xfacc15] as const; // red/yellow/blue/yellow Lego-Duplo studs
 const MAT_GREEN = 0x16a34a;
@@ -133,24 +95,43 @@ function addTier(group: THREE.Group, centerX: number, centerZ: number, tier: Tie
   group.add(tray);
 }
 
-const RACK_WIDTH_M = 0.3; // X (로봇에서 멀어지는 방향, 판재 길이 방향)
-const WORKBENCH_WIDTH_M = 0.34;
-
 function buildLoadingRack(): THREE.Group {
   const group = new THREE.Group();
   group.name = "loading_rack";
-  const width = RACK_WIDTH_M;
+  const width = 0.3;
   const depth = 0.26;
   addMat(group, 0, 0, width + 0.04, depth + 0.04);
 
-  // 층 높이 = 실제 잡는 위치 Z - TCP_ABOVE_TRAY_MM
-  const tiers = tiersFromTops(trayTopsM(REAL_RACK_PICK_MM), {
-    trayThickness: 0.012,
-    trayColor: TRAY_ACRYLIC,
-    trayOpacity: 0.55,
-    width,
-    depth,
-  });
+  // 1/2/3층 받침판 윗면 = LOAD1 해당 층 그리퍼 닫는 높이에 맞춤.
+  // poses.START_POS_PICK_X[n] Z(플랜지) -> URDF FK상 grasp frame은 약 7.4mm 아래,
+  // 판재(두께 1mm) 중심을 잡으므로 받침판 윗면 = grasp Z - 0.5mm.
+  //   1층: 155.58 -> 148.2 -> 147.7mm,  2층: 248.13 -> 240.7 -> 240.2mm,
+  //   3층: 340.63 -> 333.2 -> 332.7mm
+  const trayThickness = 0.012;
+  const tier1TopY = 0.1477;
+  const tier2TopY = 0.2402;
+  const tier3TopY = 0.3327;
+  const tiers: TierSpec[] = [
+    { baseY: 0, legHeight: tier1TopY - trayThickness, trayThickness, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
+    {
+      baseY: tier1TopY,
+      legHeight: tier2TopY - trayThickness - tier1TopY,
+      trayThickness,
+      trayColor: TRAY_ACRYLIC,
+      trayOpacity: 0.55,
+      width,
+      depth,
+    },
+    {
+      baseY: tier2TopY,
+      legHeight: tier3TopY - trayThickness - tier2TopY,
+      trayThickness,
+      trayColor: TRAY_ACRYLIC,
+      trayOpacity: 0.55,
+      width,
+      depth,
+    },
+  ];
   tiers.forEach((tier, i) => addTier(group, 0, 0, tier, i));
   return group;
 }
@@ -158,14 +139,27 @@ function buildLoadingRack(): THREE.Group {
 function buildWorkbench(): THREE.Group {
   const group = new THREE.Group();
   group.name = "workbench";
-  const width = WORKBENCH_WIDTH_M;
+  const width = 0.34;
   const depth = 0.3;
   addMat(group, 0, 0, width + 0.04, depth + 0.04);
 
-  // 판 3장 높이 = 실제 sd 1~3층 놓는 위치 Z - TCP_ABOVE_TRAY_MM
-  const shelfTops = trayTopsM(REAL_SD_PLACE_MM);
-  const shelfTiers = tiersFromTops(shelfTops, { trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth });
-  const topShelf = shelfTops[shelfTops.length - 1];
+  // 1/2/3층 선반 윗면 = UNLOAD1 해당 층 그리퍼 닫는 높이에 맞춤.
+  // unload_poses.UNLOAD_J 6/5/4번(언로드1/2/3) posj -> URDF FK상 grasp frame Z,
+  // 판(두께 1mm) 중심을 잡으므로 선반 윗면 = grasp Z - 0.5mm.
+  //   1층: 88.8 -> 88.3mm,  2층: 154.9 -> 154.4mm,  3층: 220.1 -> 219.6mm
+  const shelfThickness = 0.012;
+  const shelfTopY = [0.0883, 0.1544, 0.2196];
+  const shelfTiers: TierSpec[] = shelfTopY.map((topY, i) => {
+    const baseY = i === 0 ? 0 : shelfTopY[i - 1];
+    return {
+      baseY,
+      legHeight: topY - shelfThickness - baseY,
+      trayThickness: shelfThickness,
+      trayColor: TRAY_WHITE,
+      width,
+      depth,
+    };
+  });
   shelfTiers.forEach((tier, i) => addTier(group, 0, 0, tier, i));
 
   // Top tier: the receiving tray (수령대) -- a foam board roughly 2x the stack's
@@ -177,14 +171,20 @@ function buildWorkbench(): THREE.Group {
   const receivingWidth = width * 2;
   const receivingDepth = depth + 0.03;
   const receivingCenterX = (receivingWidth - width) / 2;
+  // 수령대 윗면 = 3층 선반 윗면 + 선반 층 간격(1~3층 윗면 간격 평균, 약 65.7mm) -> 약 285.3mm.
+  const receivingBaseY = shelfTopY[shelfTopY.length - 1];
+  const shelfPitch = (receivingBaseY - shelfTopY[0]) / (shelfTopY.length - 1);
+  const receivingThickness = 0.022;
+  const receivingTopY = receivingBaseY + shelfPitch;
+  const receivingLegHeight = receivingTopY - receivingThickness - receivingBaseY;
   addTier(
     group,
     receivingCenterX,
     0,
     {
-      baseY: topShelf,
-      legHeight: 0.08,
-      trayThickness: 0.022,
+      baseY: receivingBaseY,
+      legHeight: receivingLegHeight,
+      trayThickness: receivingThickness,
       trayColor: RECEIVING_TRAY,
       width: receivingWidth,
       depth: receivingDepth,
@@ -196,7 +196,7 @@ function buildWorkbench(): THREE.Group {
   );
 
   // Thin emissive edge outline around the receiving tray so it reads as the pickup point.
-  const edgeY = topShelf + 0.08 + 0.022;
+  const edgeY = receivingTopY;
   const outline = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(receivingWidth, 0.001, receivingDepth)),
     new THREE.LineBasicMaterial({ color: 0xfbbf24 })
@@ -220,12 +220,12 @@ export class SceneStations {
     this.group.name = "scene_stations";
 
     this.loadingRack = buildLoadingRack();
-    const [lrX, lrZ] = options.loadingRackOffset ?? stationCenter(REAL_RACK_PICK_MM, RACK_WIDTH_M);
+    const [lrX, lrZ] = options.loadingRackOffset ?? [0.85, -0.17];
     this.loadingRack.position.set(lrX, 0, lrZ);
     this.group.add(this.loadingRack);
 
     this.workbench = buildWorkbench();
-    const [wbX, wbZ] = options.workbenchOffset ?? stationCenter(REAL_SD_PLACE_MM, WORKBENCH_WIDTH_M);
+    const [wbX, wbZ] = options.workbenchOffset ?? [0.95, 0.22];
     this.workbench.position.set(wbX, 0, wbZ);
     this.group.add(this.workbench);
   }
