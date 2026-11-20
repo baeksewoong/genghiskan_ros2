@@ -28,6 +28,11 @@ def generate_launch_description() -> LaunchDescription:
     joint_name_overrides_arg = DeclareLaunchArgument(
         'joint_name_overrides', default_value=''
     )
+    gripper_enabled_arg = DeclareLaunchArgument('gripper_enabled', default_value='true')
+    gripper_do_service_arg = DeclareLaunchArgument(
+        'gripper_do_service',
+        default_value='/dsr01/dsr_controller2/io/get_ctrl_box_digital_output',
+    )
     ws_connect_timeout_sec_arg = DeclareLaunchArgument(
         'ws_connect_timeout_sec', default_value='5.0'
     )
@@ -51,6 +56,8 @@ def generate_launch_description() -> LaunchDescription:
             'ws_token': LaunchConfiguration('ws_token'),
             'joint_name_prefix': LaunchConfiguration('joint_name_prefix'),
             'joint_name_overrides': LaunchConfiguration('joint_name_overrides'),
+            'gripper_enabled': LaunchConfiguration('gripper_enabled'),
+            'gripper_do_service': LaunchConfiguration('gripper_do_service'),
             'ws_connect_timeout_sec': LaunchConfiguration('ws_connect_timeout_sec'),
             'ws_reconnect_min_sec': LaunchConfiguration('ws_reconnect_min_sec'),
             'ws_reconnect_max_sec': LaunchConfiguration('ws_reconnect_max_sec'),
@@ -65,6 +72,8 @@ def generate_launch_description() -> LaunchDescription:
         ws_token_arg,
         joint_name_prefix_arg,
         joint_name_overrides_arg,
+        gripper_enabled_arg,
+        gripper_do_service_arg,
         ws_connect_timeout_sec_arg,
         ws_reconnect_min_sec_arg,
         ws_reconnect_max_sec_arg,
