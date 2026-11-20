@@ -28,6 +28,15 @@ interface TierSpec {
   trayOpacity?: number;
   width: number;
   depth: number;
+  /** Footprint used for leg corner placement; defaults to width/depth. Set smaller than the
+   * tray so it can cantilever past its own legs (e.g. an overhanging receiving tray). */
+  legFootprintWidth?: number;
+  legFootprintDepth?: number;
+  /** Leg center offset relative to the tray's center passed into addTier(); defaults to 0
+   * (legs centered under the tray). Use to land legs on the support below instead of
+   * following the tray out over an overhang. */
+  legOffsetX?: number;
+  legOffsetZ?: number;
 }
 
 function addMat(group: THREE.Group, centerX: number, centerZ: number, width: number, depth: number): void {
@@ -43,8 +52,12 @@ function addMat(group: THREE.Group, centerX: number, centerZ: number, width: num
 
 function addTier(group: THREE.Group, centerX: number, centerZ: number, tier: TierSpec, legColorOffset: number): void {
   const legSize = 0.022;
-  const halfW = tier.width / 2 - legSize;
-  const halfD = tier.depth / 2 - legSize;
+  const legFootprintWidth = tier.legFootprintWidth ?? tier.width;
+  const legFootprintDepth = tier.legFootprintDepth ?? tier.depth;
+  const legCenterX = centerX + (tier.legOffsetX ?? 0);
+  const legCenterZ = centerZ + (tier.legOffsetZ ?? 0);
+  const halfW = legFootprintWidth / 2 - legSize;
+  const halfD = legFootprintDepth / 2 - legSize;
   const legCorners: [number, number][] = [
     [-halfW, -halfD],
     [halfW, -halfD],
@@ -60,7 +73,7 @@ function addTier(group: THREE.Group, centerX: number, centerZ: number, tier: Tie
         roughness: 0.55,
       })
     );
-    leg.position.set(centerX + dx, tier.baseY + tier.legHeight / 2, centerZ + dz);
+    leg.position.set(legCenterX + dx, tier.baseY + tier.legHeight / 2, legCenterZ + dz);
     leg.castShadow = true;
     leg.receiveShadow = true;
     leg.name = "station_leg";
@@ -92,6 +105,7 @@ function buildLoadingRack(): THREE.Group {
   const tiers: TierSpec[] = [
     { baseY: 0, legHeight: 0.13, trayThickness: 0.012, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
     { baseY: 0.142, legHeight: 0.13, trayThickness: 0.012, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
+    { baseY: 0.284, legHeight: 0.13, trayThickness: 0.012, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
   ];
   tiers.forEach((tier, i) => addTier(group, 0, 0, tier, i));
   return group;
@@ -104,38 +118,49 @@ function buildWorkbench(): THREE.Group {
   const depth = 0.3;
   addMat(group, 0, 0, width + 0.04, depth + 0.04);
 
+  // Gaps *between* the three white plates (tier2/tier3 leg heights) are 1/4 narrower
+  // than the floor-to-first-plate clearance (tier1), per user request.
   const shelfTiers: TierSpec[] = [
     { baseY: 0, legHeight: 0.1, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
-    { baseY: 0.112, legHeight: 0.1, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
-    { baseY: 0.224, legHeight: 0.1, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
+    { baseY: 0.112, legHeight: 0.075, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
+    { baseY: 0.199, legHeight: 0.075, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
   ];
   shelfTiers.forEach((tier, i) => addTier(group, 0, 0, tier, i));
 
-  // Top tier: the receiving tray (수령대) -- a wider foam board, highlighted.
-  const receivingWidth = width + 0.05;
+  // Top tier: the receiving tray (수령대) -- a foam board roughly 2x the stack's
+  // length, overhanging only toward the back (away from the robot, +X) so its
+  // front edge stays flush with the shelves below, matching the reference photo.
+  // Its 4 support legs stay on tier3's own footprint (legOffsetX cancels the tray's
+  // backward shift) so none of them dangle in the air under the overhang -- the
+  // board cantilevers off the workbench stack instead.
+  const receivingWidth = width * 2;
   const receivingDepth = depth + 0.03;
+  const receivingCenterX = (receivingWidth - width) / 2;
   addTier(
     group,
-    0,
+    receivingCenterX,
     0,
     {
-      baseY: 0.336,
+      baseY: 0.286,
       legHeight: 0.08,
       trayThickness: 0.022,
       trayColor: RECEIVING_TRAY,
       width: receivingWidth,
       depth: receivingDepth,
+      legFootprintWidth: width,
+      legFootprintDepth: depth,
+      legOffsetX: -receivingCenterX,
     },
     3
   );
 
   // Thin emissive edge outline around the receiving tray so it reads as the pickup point.
-  const edgeY = 0.336 + 0.08 + 0.022;
+  const edgeY = 0.286 + 0.08 + 0.022;
   const outline = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(receivingWidth, 0.001, receivingDepth)),
     new THREE.LineBasicMaterial({ color: 0xfbbf24 })
   );
-  outline.position.set(0, edgeY, 0);
+  outline.position.set(receivingCenterX, edgeY, 0);
   outline.name = "receiving_tray_outline";
   group.add(outline);
 
@@ -154,12 +179,12 @@ export class SceneStations {
     this.group.name = "scene_stations";
 
     this.loadingRack = buildLoadingRack();
-    const [lrX, lrZ] = options.loadingRackOffset ?? [0.9, -0.32];
+    const [lrX, lrZ] = options.loadingRackOffset ?? [0.9, -0.17];
     this.loadingRack.position.set(lrX, 0, lrZ);
     this.group.add(this.loadingRack);
 
     this.workbench = buildWorkbench();
-    const [wbX, wbZ] = options.workbenchOffset ?? [0.9, 0.22];
+    const [wbX, wbZ] = options.workbenchOffset ?? [1.0, 0.22];
     this.workbench.position.set(wbX, 0, wbZ);
     this.group.add(this.workbench);
   }
