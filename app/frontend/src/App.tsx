@@ -25,21 +25,29 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  const page =
+  const isHome = hash === "#/";
+  const otherPage =
     hash === "#/sqs-monitor" ? (
       <SqsMonitorPage />
     ) : hash === "#/teaching-pendant" ? (
       <TeachingPendantPage />
     ) : hash === "#/work-history" ? (
       <WorkHistoryPage />
-    ) : (
-      <DashboardPage />
-    );
+    ) : null;
 
   return (
     <div className="app-shell">
       <NavSidebar routes={ROUTES} currentPath={hash} />
-      <div className="app-shell-content">{page}</div>
+      <div className="app-shell-content">
+        {/* 홈(DashboardPage)은 다른 라우트로 이동해도 언마운트하지 않고 CSS로만 숨긴다.
+            홈에 있는 3D 로봇 뷰어(DoosanArmViewer)와 그 WebSocket 구독(useLiveState)이
+            라우트 전환 때마다 리셋되지 않고 로봇의 실시간 움직임을 계속 따라가게 하기
+            위함이다. 다른 페이지들은 평소처럼 활성 라우트일 때만 마운트한다. */}
+        <div style={{ display: isHome ? undefined : "none" }}>
+          <DashboardPage />
+        </div>
+        {otherPage}
+      </div>
     </div>
   );
 }
