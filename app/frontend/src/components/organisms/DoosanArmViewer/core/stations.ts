@@ -102,10 +102,35 @@ function buildLoadingRack(): THREE.Group {
   const depth = 0.26;
   addMat(group, 0, 0, width + 0.04, depth + 0.04);
 
+  // 1/2/3층 받침판 윗면 = LOAD1 해당 층 그리퍼 닫는 높이에 맞춤.
+  // poses.START_POS_PICK_X[n] Z(플랜지) -> URDF FK상 grasp frame은 약 7.4mm 아래,
+  // 판재(두께 1mm) 중심을 잡으므로 받침판 윗면 = grasp Z - 0.5mm.
+  //   1층: 155.58 -> 148.2 -> 147.7mm,  2층: 248.13 -> 240.7 -> 240.2mm,
+  //   3층: 340.63 -> 333.2 -> 332.7mm
+  const trayThickness = 0.012;
+  const tier1TopY = 0.1477;
+  const tier2TopY = 0.2402;
+  const tier3TopY = 0.3327;
   const tiers: TierSpec[] = [
-    { baseY: 0, legHeight: 0.13, trayThickness: 0.012, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
-    { baseY: 0.142, legHeight: 0.13, trayThickness: 0.012, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
-    { baseY: 0.284, legHeight: 0.13, trayThickness: 0.012, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
+    { baseY: 0, legHeight: tier1TopY - trayThickness, trayThickness, trayColor: TRAY_ACRYLIC, trayOpacity: 0.55, width, depth },
+    {
+      baseY: tier1TopY,
+      legHeight: tier2TopY - trayThickness - tier1TopY,
+      trayThickness,
+      trayColor: TRAY_ACRYLIC,
+      trayOpacity: 0.55,
+      width,
+      depth,
+    },
+    {
+      baseY: tier2TopY,
+      legHeight: tier3TopY - trayThickness - tier2TopY,
+      trayThickness,
+      trayColor: TRAY_ACRYLIC,
+      trayOpacity: 0.55,
+      width,
+      depth,
+    },
   ];
   tiers.forEach((tier, i) => addTier(group, 0, 0, tier, i));
   return group;
@@ -118,13 +143,23 @@ function buildWorkbench(): THREE.Group {
   const depth = 0.3;
   addMat(group, 0, 0, width + 0.04, depth + 0.04);
 
-  // Gaps *between* the three white plates (tier2/tier3 leg heights) are 1/4 narrower
-  // than the floor-to-first-plate clearance (tier1), per user request.
-  const shelfTiers: TierSpec[] = [
-    { baseY: 0, legHeight: 0.1, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
-    { baseY: 0.112, legHeight: 0.075, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
-    { baseY: 0.199, legHeight: 0.075, trayThickness: 0.012, trayColor: TRAY_WHITE, width, depth },
-  ];
+  // 1/2/3층 선반 윗면 = UNLOAD1 해당 층 그리퍼 닫는 높이에 맞춤.
+  // unload_poses.UNLOAD_J 6/5/4번(언로드1/2/3) posj -> URDF FK상 grasp frame Z,
+  // 판(두께 1mm) 중심을 잡으므로 선반 윗면 = grasp Z - 0.5mm.
+  //   1층: 88.8 -> 88.3mm,  2층: 154.9 -> 154.4mm,  3층: 220.1 -> 219.6mm
+  const shelfThickness = 0.012;
+  const shelfTopY = [0.0883, 0.1544, 0.2196];
+  const shelfTiers: TierSpec[] = shelfTopY.map((topY, i) => {
+    const baseY = i === 0 ? 0 : shelfTopY[i - 1];
+    return {
+      baseY,
+      legHeight: topY - shelfThickness - baseY,
+      trayThickness: shelfThickness,
+      trayColor: TRAY_WHITE,
+      width,
+      depth,
+    };
+  });
   shelfTiers.forEach((tier, i) => addTier(group, 0, 0, tier, i));
 
   // Top tier: the receiving tray (수령대) -- a foam board roughly 2x the stack's
@@ -136,14 +171,20 @@ function buildWorkbench(): THREE.Group {
   const receivingWidth = width * 2;
   const receivingDepth = depth + 0.03;
   const receivingCenterX = (receivingWidth - width) / 2;
+  // 수령대 윗면 = 3층 선반 윗면 + 선반 층 간격(1~3층 윗면 간격 평균, 약 65.7mm) -> 약 285.3mm.
+  const receivingBaseY = shelfTopY[shelfTopY.length - 1];
+  const shelfPitch = (receivingBaseY - shelfTopY[0]) / (shelfTopY.length - 1);
+  const receivingThickness = 0.022;
+  const receivingTopY = receivingBaseY + shelfPitch;
+  const receivingLegHeight = receivingTopY - receivingThickness - receivingBaseY;
   addTier(
     group,
     receivingCenterX,
     0,
     {
-      baseY: 0.286,
-      legHeight: 0.08,
-      trayThickness: 0.022,
+      baseY: receivingBaseY,
+      legHeight: receivingLegHeight,
+      trayThickness: receivingThickness,
       trayColor: RECEIVING_TRAY,
       width: receivingWidth,
       depth: receivingDepth,
@@ -155,7 +196,7 @@ function buildWorkbench(): THREE.Group {
   );
 
   // Thin emissive edge outline around the receiving tray so it reads as the pickup point.
-  const edgeY = 0.286 + 0.08 + 0.022;
+  const edgeY = receivingTopY;
   const outline = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(receivingWidth, 0.001, receivingDepth)),
     new THREE.LineBasicMaterial({ color: 0xfbbf24 })
@@ -179,12 +220,12 @@ export class SceneStations {
     this.group.name = "scene_stations";
 
     this.loadingRack = buildLoadingRack();
-    const [lrX, lrZ] = options.loadingRackOffset ?? [0.9, -0.17];
+    const [lrX, lrZ] = options.loadingRackOffset ?? [0.85, -0.17];
     this.loadingRack.position.set(lrX, 0, lrZ);
     this.group.add(this.loadingRack);
 
     this.workbench = buildWorkbench();
-    const [wbX, wbZ] = options.workbenchOffset ?? [1.0, 0.22];
+    const [wbX, wbZ] = options.workbenchOffset ?? [0.95, 0.22];
     this.workbench.position.set(wbX, 0, wbZ);
     this.group.add(this.workbench);
   }
