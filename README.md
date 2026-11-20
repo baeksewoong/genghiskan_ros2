@@ -41,12 +41,11 @@
 1. 주문 접수 → 보드 투입 → 작업(타이머) → 회수 → 수령까지 무인 처리
 2. 보드 부족이나 작업 중 이벤트 등 예외 상황에 대한 대응
 3. 로봇의 상태와 작업 처리 상황을 모니터링할 수 있는 웹 대시보드 개발
-- **데모**: [시연 영상](assets/docs/시연영상.mp4)
 - **기획 문서**: [PRD](assets/docs/prd.md) · [작업요청 SQS PRD](assets/docs/prd-work-request-sqs.md) · [티칭 팬던트 PRD](assets/docs/prd-teaching-pendant.md) · [티칭 팬던트 ROS2 PRD](assets/docs/prd-teaching-pendant-ros2.md)
 
 <div align="center">
 
-<video src="assets/docs/시연영상.mp4" controls width="700"></video>
+<img src="assets/docs/시연영상_5초.gif" width="700"/>
 
 </div>
 
