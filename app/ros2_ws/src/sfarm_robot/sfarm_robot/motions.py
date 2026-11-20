@@ -35,6 +35,7 @@ from DSR_ROBOT2 import (
     get_tool_force,
     movej,
     movel,
+    movesj,
     release_compliance_ctrl,
     set_digital_output,
     task_compliance_ctrl,
@@ -147,6 +148,13 @@ PRE_INSERT_HOLD_SEC = 3.0      # sd 다음 첫 점(SD_PRE_INSERT)에서 멈추�
 # ---------------------------------------------------------------- 작업대에서 판재 꺼내기 (Unload1)
 UNLOAD_VELJ, UNLOAD_ACCJ = 22.5, 22.5
 UNLOAD_VELX, UNLOAD_ACCX = 67.5, 67.5
+# 수령대에 놓은 뒤 홈 복귀: 경유 좌표 전체를 movesj(관절 스플라인) 한 번으로 멈춤 없이 이동.
+#   좌표별 속도(UNLOAD_SLOW_MOVES)는 적용되지 않고 이 속도 하나로 간다 (deg/s, deg/s^2).
+UNLOAD_RETURN_VELJ, UNLOAD_RETURN_ACCJ = 27.0, 22.5   # 속도만 올림 (가속도는 기본 언로드와 같게)
+# 수령대에서 놓기 전 자리 맞추기: base 좌표 기준 좌우(UNLOAD_WIGGLE_AXIS)로 ±mm 흔든 뒤 중심으로 돌아와 놓는다.
+UNLOAD_WIGGLE_AXIS = 'Y'            # 좌우 축 (base 기준 'X' / 'Y'). 실제 방향이 다르면 바꿀 것
+UNLOAD_WIGGLE_MM = 2.0              # 한쪽으로 움직이는 거리 (mm)
+UNLOAD_WIGGLE_VELX, UNLOAD_WIGGLE_ACCX = 10.0, 10.0   # mm/s, mm/s^2 (짧은 거리라 천천히)
 # 잡은 뒤 이동(베드 빼내기 7~11번 / 수령대 / 복귀)을 movel(직선)로 할지. False면 예전처럼 movej.
 #   좌표는 posj로 저장돼 있어서 movel 때는 fkin으로 posx로 바꿔서 간다.
 UNLOAD_USE_MOVEL = True
@@ -1317,6 +1325,42 @@ def unload_move_j(name: str, j, log=print, linear: bool | None = None,
         movej(posj(*j), vel=vel, acc=acc)
 
 
+def unload_return_path(receive_pos_id: int) -> list:
+    """수령대 receive_pos_id에서 홈까지 복귀 경로 [(이름, posj), ...].
+    unload_poses.unload_return_path: 수령대별 앞부분(UNLOAD_RETURN_HEAD_J) + 공통 끝부분(UNLOAD_RETURN_TAIL_J)."""
+    return unload_poses.unload_return_path(receive_pos_id)
+
+
+def unload_return_home(receive_pos_id: int, log=print, start: int = 1) -> None:
+    """그리퍼를 연 뒤 복귀 경로 전체를 movesj 한 번으로 이동 (경유점에서 멈추지 않는 관절 스플라인).
+    바로 앞 좌표와 같은 좌표는 빼고 넘긴다 (스플라인에 같은 점이 연속이면 안 됨).
+    start: 복귀 경로의 몇 번째 점(1부터)부터 갈지 (테스트용, 기본 = 처음부터)."""
+    path = unload_return_path(receive_pos_id)[max(start, 1) - 1:]
+    pts, names = [], []
+    for name, j in path:
+        if pts and list(j) == list(pts[-1]):
+            log(f'  {name}: 바로 앞 좌표와 같음 -> 경유점에서 뺌')
+            continue
+        pts.append(list(j))
+        names.append(name)
+    if not pts:
+        return
+    log(f'  [복귀] 수령대{receive_pos_id} -> 홈 movesj {len(pts)}점 '
+        f'(vel={UNLOAD_RETURN_VELJ} acc={UNLOAD_RETURN_ACCJ}): {" -> ".join(names)}')
+    movesj([posj(*j) for j in pts], vel=UNLOAD_RETURN_VELJ, acc=UNLOAD_RETURN_ACCJ)
+
+
+def unload_recv_wiggle(log=print) -> None:
+    """수령대에서 놓기 전에 좌우로 흔들어 자리 맞추기: 중심 -> +mm -> -mm -> 중심 (base 기준 상대 이동)."""
+    i = _TASK_AXIS_INDEX[UNLOAD_WIGGLE_AXIS]
+    mm = UNLOAD_WIGGLE_MM
+    log(f'  [자리 맞추기] base {UNLOAD_WIGGLE_AXIS} ±{mm:.0f}mm 좌우 이동 (vel={UNLOAD_WIGGLE_VELX} acc={UNLOAD_WIGGLE_ACCX})')
+    for d in (mm, -2 * mm, mm):   # +mm, (반대쪽) -mm, 다시 중심
+        delta = [0.0] * 6
+        delta[i] = d
+        movel(posx(*delta), vel=UNLOAD_WIGGLE_VELX, acc=UNLOAD_WIGGLE_ACCX, ref=DR_BASE, mod=DR_MV_MOD_REL)
+
+
 def unload_move_pre(layer: int, log=print) -> None:
     """언로드 layer층 진입전 좌표로 관절 이동 (없거나 진입전2와 같으면 생략)."""
     pre = getattr(unload_poses, 'UNLOAD_PRE_J', {}).get(layer)
@@ -1457,7 +1501,7 @@ def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool
        (UNLOAD_MOVEL_FROM_STEP 이전은 movej, 이후는 UNLOAD_USE_MOVEL에 따라 movel)
     2) UNLOAD_RECV_J[receive_pos_id] 순서로 수령대 이동 (직전 좌표와 같으면 생략)
     3) grip_open()으로 수령대에 베드판 놓기
-    4) UNLOAD_RETURN_J 순서로 홈 복귀
+    4) 복귀 경로(unload_poses.unload_return_path(receive_pos_id))를 movesj 한 번으로 홈 복귀
     좌표가 없는 수령대 번호나 추출 경로가 없는 층이면 움직이기 전에 예외 처리된다.
     """
     receive_pos_id = goal.receive_pos_id
@@ -1487,7 +1531,6 @@ def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool
         if n not in table:
             raise ValueError(f'UNLOAD_J에 {n}번 좌표 없음 (가능: {sorted(table)})')
 
-    return_steps = list(getattr(unload_poses, 'UNLOAD_RETURN_J', []))
     movel_from = getattr(unload_poses, 'UNLOAD_MOVEL_FROM_STEP', 10)
 
     log(f'[unload2] 작업대 {target_layer}층 빼내기 -> 수령대 {receive_pos_id}번')
@@ -1502,11 +1545,11 @@ def run_unload2(goal: Unload2.Goal, log=print, layer: int | None = None) -> bool
             continue
         unload_move_j(name, jj, log=log)
 
+    unload_recv_wiggle(log=log)
     log(f'  수령대{receive_pos_id} 도착 -> 그리퍼 열기 (놓기)')
     grip_open()
 
-    for name, jj in return_steps:
-        unload_move_j(name, jj, log=log)
+    unload_return_home(receive_pos_id, log=log)
 
     log(f'[unload2] 수령대{receive_pos_id} 전달 후 홈 복귀 완료')
     return True
