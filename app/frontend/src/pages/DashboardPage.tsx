@@ -52,6 +52,9 @@ export function DashboardPage() {
   const liveJoints = robotJoints ? robotJoints.joints : DOOSAN_HOME_POSES_DEG.ready;
   const liveAngleUnit = robotJoints ? robotJoints.angle_unit : "deg";
   const liveTimestampMs = robotJoints ? robotJoints.timestamp_ms : undefined;
+  // ROS2 브릿지가 joints_updated 페이로드에 얹어 보내는 RG2 폭(gripper.width_mm)이 있으면
+  // 그대로 뷰어에 반영한다. 없으면 undefined로 두어 뷰어가 마지막 폭을 유지하게 한다.
+  const liveGripperWidthMm = robotJoints?.gripper?.width_mm;
   const viewerConnectionStatus = connected ? "connected" : "disconnected";
 
   const handleOrder = async (customerName: string, shape: Shape) => {
@@ -147,6 +150,7 @@ export function DashboardPage() {
             joints={liveJoints}
             angleUnit={liveAngleUnit}
             timestampMs={liveTimestampMs}
+            gripperWidthMm={liveGripperWidthMm}
             connectionStatus={viewerConnectionStatus}
             showHomeButton={false}
             showGripperControls={false}
