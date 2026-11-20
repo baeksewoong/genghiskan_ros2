@@ -141,7 +141,6 @@ def deliver_and_return(motions, last_name: str, last_j, first: int | None = None
     지나온 좌표를 거꾸로 되짚어 11번(선택 전 위치)으로 돌아와 수령대를 다시 고른다."""
     p = motions.unload_poses
     recv = getattr(p, 'UNLOAD_RECV_J', {})
-    back = getattr(p, 'UNLOAD_RETURN_J', [])
     if not recv:
         return
     opts = '/'.join(str(k) for k in sorted(recv))
@@ -193,15 +192,18 @@ def deliver_and_return(motions, last_name: str, last_j, first: int | None = None
         if a == 'b':
             return_to_select()
             continue
+        motions.unload_recv_wiggle(log=print)   # 좌우 ±2mm로 자리 맞춘 뒤 놓기
         print(f'  수령대{ans} 도착 -> 그리퍼 열기 (놓기)')
         motions.grip_open()
-        for name, jj in getattr(p, 'UNLOAD_RECV_RETURN_J', {}).get(int(ans), back):   # 수령대별 경로가 없으면 공통 복귀
-            a = input(f'  {name} {jj} 로 이동할까요? (Enter=진행, q=멈춤) ').strip().lower()
-            if a == 'q':
-                print(f'  {name} 앞에서 멈춤')
-                return
-            vs, as_ = getattr(p, 'UNLOAD_SLOW_MOVES', {}).get(name, (1.0, 1.0))   # 복귀3 등은 천천히
-            motions.unload_move_j(name, jj, log=print, vel_scale=vs, acc_scale=as_)
+        # 복귀는 경유 좌표 전체를 movesj 한 번으로 (멈춤 없이). 수령대별 경로가 없으면 공통 복귀
+        path = motions.unload_return_path(int(ans))
+        for name, jj in path:
+            print(f'    {name} {jj}')
+        a = input(f'  위 {len(path)}개 좌표를 movesj로 이어서 홈 복귀할까요? (Enter=진행, q=멈춤) ').strip().lower()
+        if a == 'q':
+            print('  복귀 전에 멈춤 (그리퍼 열린 상태)')
+            return
+        motions.unload_return_home(int(ans), log=print)
         print(f'  [완료] 수령대{ans} 전달 후 홈 복귀')
         return
 
