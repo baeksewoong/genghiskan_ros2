@@ -284,6 +284,8 @@ ros2 run sfarm_joint_streamer joint_streamer --ros-args -p joint_states_topic:=/
 
    
       
+<br/>
+<br/>
 
 
 ## <img src="assets/robots/love.svg" width="32" align="center"/> 팀원 소개
@@ -292,11 +294,11 @@ ros2 run sfarm_joint_streamer joint_streamer --ros-args -p joint_states_topic:=/
 
 | | 이름 | 역할 |
 |:---:|:---|:---|
-| <img src="assets/robots/hello.svg" width="60"/> | [남규진](https://github.com/skarbwls419-art) | ROS 2 모듈 개발 / launch.py 파일 작성 및 통합 테스트 QA |
-| <img src="assets/robots/love.svg" width="60"/> | [백세웅](https://github.com/tpdnd16-jpg) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
-| <img src="assets/robots/excited.svg" width="60"/> | [최희범](https://github.com/kcodeusers) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
-| <img src="assets/robots/sleepy.svg" width="60"/> | [나연수](https://github.com/I-Am-Na) | 아이디어 기획/ 웹서버와 ROS2 node의 통신 노드 개발 / 인터페이스 정의 / 디지털 트윈 모듈 개발 / 프로젝트 발표 |
-| <img src="assets/robots/drained.svg" width="60"/> | [류병옥](https://github.com/devrereg) | 시스템 아키텍쳐 설계 / 웹 개발 / 로봇 디지털 트윈 / 웹 티칭펜던트 구현으로 정밀 좌표 추출 | 
+| <img src="assets/robots/hello.svg" width="30"/> | [남규진](https://github.com/skarbwls419-art) | ROS 2 모듈 개발 / launch.py 파일 작성 및 통합 테스트 QA |
+| <img src="assets/robots/love.svg" width="30"/> | [백세웅](https://github.com/tpdnd16-jpg) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
+| <img src="assets/robots/excited.svg" width="30"/> | [최희범](https://github.com/kcodeusers) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
+| <img src="assets/robots/sleepy.svg" width="30"/> | [나연수](https://github.com/I-Am-Na) | 아이디어 기획/ 웹서버와 ROS2 node의 통신 노드 개발 / 인터페이스 정의 / 디지털 트윈 모듈 개발 / 프로젝트 발표 |
+| <img src="assets/robots/drained.svg" width="30"/> | [류병옥](https://github.com/devrereg) | 시스템 아키텍쳐 설계 / 웹 개발 / 로봇 디지털 트윈 / 웹 티칭펜던트 구현으로 정밀 좌표 추출 | 
 
 </div>
 
