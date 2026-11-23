@@ -33,7 +33,7 @@
 
 <tr>
 <td align="center"><img src="assets/common/load1.gif" width="260"/><br/>베드 빼기</td>
-<td align="center"><img src="assets/common/load2.gif" width="260"/><br/>배드 넣기</td>
+<td align="center"><img src="assets/common/load2.gif" width="260"/><br/>베드 넣기</td>
 <td align="center"><img src="assets/common/unload.gif" width="260"/><br/>출력</td>
 </tr>
 </table>
