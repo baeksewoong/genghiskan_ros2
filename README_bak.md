@@ -1,0 +1,203 @@
+# [두산로보틱스 협동로봇 프로젝트]
+<div align="center">
+
+<img src="assets/robots/hello.svg" width="120" alt="소규모 3D 프린트 업장 관리 로봇"/>
+
+# [A-2조_징기스칸] 3Farm _ ROKEY 10기
+
+<img src="assets/common/3Farm.png" width="500" align="center"/>
+
+<br/><br/>
+</div>
+
+
+
+## SKILLS
+![FastAPI](https://img.shields.io/badge/FastAPI-0.11x-009688?style=flat-square&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?style=flat-square&logo=mysql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
+![AWS SQS](https://img.shields.io/badge/AWS_SQS-FF4F8B?style=flat-square&logo=amazonsqs&logoColor=white)
+![ROS 2](https://img.shields.io/badge/ROS_2-Jazzy-22314E?style=flat-square&logo=ros&logoColor=white)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-E95420?style=flat-square&logo=ubuntu&logoColor=white)
+![Doosan M0609](https://img.shields.io/badge/Doosan_Robot-M0609-0066B3?style=flat-square)
+[![DRL](https://img.shields.io/badge/DRL-Doosan_Robot_Language-0066B3?style=flat-square)](https://v2-manual.scroll.site/ko/v2-programming-manual/2.12.1/publish/drl-basic-syntax)
+
+
+## <img src="assets/robots/hello.svg" width="32" align="center"/> 프로젝트 결과
+
+
+<table align="center">
+
+<tr>
+<td align="center"><img src="assets/common/load1.gif" width="260"/><br/>베드 빼기</td>
+<td align="center"><img src="assets/common/load2.gif" width="260"/><br/>배드 넣기</td>
+<td align="center"><img src="assets/common/unload.gif" width="260"/><br/>출력</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<img src="assets/common/demo.gif" width="100%"/>
+</tr>
+</table>
+
+
+
+
+
+## <img src="assets/robots/hello.svg" width="32" align="center"/> 프로젝트 소개
+
+```
+- 소규모 3D 프린트 업장을 로봇팔 1대가 무인으로 운영합니다.
+- 웹 UI를 이용해 두산 로봇팔이 3D 프린터 3대에 보드를 넣고 빼며 주문을 자동으로 처리 합니다.
+```
+
+- **기간**: 2026.11.09 ~ 2026.11.20
+- **목표**: 
+1. 주문 접수 → 보드 투입 → 작업(타이머) → 회수 → 수령까지 무인 처리
+2. 보드 부족이나 작업 중 이벤트 등 예외 상황에 대한 대응
+3. 로봇의 상태와 작업 처리 상황을 모니터링할 수 있는 웹 대시보드 개발
+
+
+<div align="center">
+
+
+</div>
+
+
+| 기능 | 설명 |
+|------|------|
+| 🧾 주문 접수 | 유저 이름, 랜덤 모양, 웹 수동 주문 |
+| 🦾 보드 투입 | 빈 프린터가 있을 때만 적재대의 새 보드를 아래층부터 투입 |
+| ⏱️ 프린터 타이머 | 보드 투입 완료 시점부터 모양별 출력 시간 카운트 |
+| 📦 회수 | 작업 완료된 보드를 꺼내 수령대에 놓기 |
+| ⏳ 작업 중 이벤트 대기 | 로봇이 일하는 동안 들어온 이벤트는 SQS(큐)에 쌓였다가 작업이 끝나면 순서대로 처리 |
+| 🚨 보드 보충 알럿 | 재고 0이 되면 "보드를 채워주세요" 알럿, 확인 후 재개 |
+| 🔍 실물 보드 없음 감지 | 로봇이 적재대의 보드를 못 집으면 주문을 대기중으로 되돌리고 SQS(큐)에 재처리 하도록 다시 큐에 넣는다. |
+| 🙋 수령 | 유저가 수령대에서 완성물을 수령해가려면 웹 대시보드에서 수령을 누른다 |
+| 🎮 웹 대시보드 | 작업 대기(밀려있는 작업 로그), 3D 프린터 작업대 현황(작업 상태), 수령 대기, 적재대 현황, 수령대 현황, 작업 히스토리 |
+| 🧪 예외 처리 | NO_BOARD, GRIP_FAIL 상황에 예외 흐름 처리 -> 홈으로 돌아와 문제가 해결될 따까지 작업을 멈춘다. |
+
+
+
+### 주문 상태 흐름
+<img src="assets/common/printfarm_order_state_flow_v2.svg" align="center"/>
+
+
+
+
+## 🧩 시스템 구조
+
+<img src="assets/common/system_architect.png" align="center">
+
+- **server**: 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
+- **sfarm_bridge**: `robot-commands` 큐를 구독해 ROS 2 액션으로 실행하고, 실행 결과를 `robot-events` 큐로 서버에 돌려준다.
+- **sfarm_robot**: 두산 M0609 + OnRobot RG2 그리퍼의 실제 LOAD/UNLOAD 동작을 수행하는 액션 서버.
+- **sfarm_joint_streamer**: 로봇 조인트 각도를 `/ws/robot-state` WebSocket으로 스트리밍해 대시보드 3D 뷰어(티칭 팬던트)에 실시간 자세를 반영한다.
+
+로봇과의 통신은 AWS SQS로만 이루어진다 (가상 로봇/시뮬레이터 경로는 제거됨).
+
+<details>
+<summary>📦 디렉터리 구성 펼쳐보기</summary>
+
+```
+.
+├── app/
+│   ├── backend/                   # FastAPI 서버 (레이어드 아키텍처: api → services → repositories → models/core)
+│   │   └── app/
+│   │       ├── api/                # REST 라우터 + /ws/client
+│   │       ├── services/           # 작업요청, 적재대/프린터/수령대, SQS 프로듀서/컨슈머, 타이머, 티칭 팬던트 등
+│   │       ├── repositories/       # DB 접근 계층
+│   │       └── core/               # 설정, DB, 부트스트랩
+│   ├── frontend/                   # React + TypeScript + Vite, 아토믹 디자인(atoms~pages) 대시보드
+│   ├── ros2_ws/src/
+│   │   ├── sfarm_interfaces/       # 커스텀 action / msg
+│   │   ├── sfarm_bridge/           # AWS SQS ↔ ROS 2 액션 브릿지 노드
+│   │   ├── sfarm_robot/            # 두산 M0609 + OnRobot RG2 로봇팔 동작 실행 노드 (LOAD/UNLOAD)
+│   │   └── sfarm_joint_streamer/   # 조인트 상태 → 백엔드 WebSocket 스트리밍 (3D 뷰어용)
+│   └── docker-compose.yml          # MySQL 8.0 + backend
+├── assets/docs/                     # PRD, WBS, 작업 이력 등 기획 문서
+└── README.md
+```
+
+</details>
+
+## 🚀 시작하기
+
+### 요구 사항
+- Docker / Docker Compose
+- Python 3.12
+- Node.js 20+
+- AWS SQS 엔드포인트 2개, region, accessKey, SecretKey
+- Ubuntu 24.04, ROS 2 Jazzy, doosan-robot2
+- rg2 그리퍼를 포함한 두산 협동로봇 Simulator 설치 (https://github.com/ahnisinc/cobot_rg2.git)
+
+
+### 웹 빌드 & 실행
+
+실제 구현은 `app/` 아래 있습니다 (`app/backend`, `app/frontend`, `app/ros2_ws`). 처음 클론한 뒤
+아래 스크립트 두 개로 실행할 수 있습니다 (자세한 설명·수동 실행 방법은 [`app/README.md`](app/README.md) 참고).
+
+```bash
+# 1. 저장소 클론
+git clone https://github.com/baeksewoong/genghiskan_ros2.git
+cd genghiskan_ros2/app
+
+# 2. 최초 1회 설정 (venv/npm install, .env 생성, MySQL(Docker) 기동, DB 스키마 생성)
+./scripts/setup.sh
+
+# 3. 이후 매번 이것만 실행 (Docker 컨테이너 안 떠있으면 기동 + 백엔드·프론트엔드 실행)
+./scripts/run_all.sh
+
+# 4. joint streamer => 로봇 동작 시뮬레이터
+ros2 run sfarm_joint_streamer joint_streamer --ros-args -p joint_states_topic:=/dsr01/joint_states
+
+```
+
+- 백엔드: http://localhost:8000, 프론트엔드: http://localhost:5173
+
+
+
+
+## <img src="assets/robots/drained.svg" width="32" align="center"/> 트러블슈팅
+프로젝트 진행중 마주했던 문제와 해결방법에 대해 정리합니다.
+<details>
+<summary>❗ (예시) 문제 1 — 로봇이 작업 중일 때 들어온 이벤트가 유실되거나 순서가 꼬임</summary>
+
+- **원인**: 주문 생성·출력 완료 이벤트를 메시지로 바로 로봇에 보내면, 로봇이 바쁠 때 이벤트가 버려지거나 중복 실행될 수 있음
+- **해결**: 이벤트는 DB 상태로만 남기고, 로봇의 작업 결과를 받을 때마다 디스패처가 `UNLOAD > LOAD` 우선순위를 다시 평가. 동시 실행 작업은 트랜잭션(`SELECT ... FOR UPDATE`)으로 최대 1개 보장
+- **배운 점**: 
+
+</details>
+
+
+
+   
+      
+
+
+## <img src="assets/robots/love.svg" width="32" align="center"/> 팀원 소개
+
+<div align="center">
+
+| | 이름 | 역할 |
+|:---:|:---|:---|
+| <img src="assets/robots/hello.svg" width="60"/> | [남규진](https://github.com/skarbwls419-art) | ROS 2 모듈 개발 / launch.py 파일 작성 및 통합 테스트 QA |
+| <img src="assets/robots/love.svg" width="60"/> | [백세웅](https://github.com/tpdnd16-jpg) | 로봇 팔 동작 구현 (LOAD / UNLOAD) |
+| <img src="assets/robots/excited.svg" width="60"/> | [최희범](https://github.com/kcodeusers) | 로봇팔 동작 구현 (LOAD / UNLOAD) |
+| <img src="assets/robots/sleepy.svg" width="60"/> | [나연수](https://github.com/I-Am-Na) | 웹서버와 ROS2 node의 통신 노드 개발 / 인터페이스 정의 |
+| <img src="assets/robots/drained.svg" width="60"/> | [류병옥](https://github.com/devrereg) | 시스템 아키텍쳐 설계 / 웹 개발 |
+
+</div>
+
+
+
+<div align="center">
+<img src="assets/robots/excited.svg" width="60"/>
+
+**⭐ 맘에 드셨다면 Star를 눌러주세요!**
+
+</div>
