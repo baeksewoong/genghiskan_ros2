@@ -1,12 +1,8 @@
-# [두산로보틱스 10기 / 협동-1 / 프로젝트]
+# [두산로보틱스 ROKEY 10기 / 협동-1 / A-2조(징기스칸팀)] <br/> 3Farm Project
 
-<div align="center">
+<div>
 
-<img src="assets/robots/hello.svg" width="120" alt="소규모 3D 프린트 업장 관리 로봇"/>
-
-# [A-2조_징기스칸] 3Farm _ ROKEY 10기
-
-<img src="assets/common/3Farm.png" width="500" align="center"/>
+<img src="assets/common/3Farm.png" width="100%" align="center"/>
 
 <br/><br/>
 </div>
