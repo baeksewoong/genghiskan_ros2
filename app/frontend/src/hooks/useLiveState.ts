@@ -325,6 +325,19 @@ export function useLiveState() {
   // 클라이언트 쪽 타임아웃(TP-11) 발생 시 세션 상태를 갱신한다. 실제 완료/실패는 여전히
   // 위 ws.onmessage의 teaching_pendant.* 이벤트가 갱신한다.
 
+  /** POST /session 응답을 즉시 반영한다 — WS 브로드캐스트(teaching_pendant.session_changed)가
+   * 재연결 타이밍 등으로 이 클라이언트에 도달하지 못해도 활성화/비활성화 버튼이 서버 상태와
+   * 어긋나지 않도록 REST 응답 자체를 신뢰한다. 뒤이어 같은 내용의 WS 이벤트가 와도 멱등이라
+   * 문제 없다. */
+  function applyTeachingPendantSession(enabled: boolean, currentPose: TeachingPendantPose | null) {
+    setTeachingPendant((prev) => ({
+      ...INITIAL_TEACHING_PENDANT_STATE,
+      enabled,
+      currentPose,
+      owner: enabled ? prev.owner : null,
+    }));
+  }
+
   /** POST /jog가 202로 받아들여진 직후 호출 — 다음 완료/실패 응답이 올 때까지
    * 조그 패드를 막는다(8.2 스텝 상호 배제). */
   function beginTeachingPendantJog(jogId: string) {
@@ -397,6 +410,7 @@ export function useLiveState() {
     receivePos,
     teachingPendant,
     robotJoints,
+    applyTeachingPendantSession,
     beginTeachingPendantJog,
     beginTeachingPendantGripper,
     timeoutTeachingPendantJog,

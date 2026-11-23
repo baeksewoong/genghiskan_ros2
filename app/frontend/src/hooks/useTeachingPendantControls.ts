@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, TeachingPendantError } from "../lib/api";
-import type { GripperAction, JogAxis, JogRefFrame, JogSpace } from "../types";
+import type { GripperAction, JogAxis, JogRefFrame, JogSpace, TeachingPendantPose } from "../types";
 import type { TeachingPendantState } from "./useLiveState";
 
 const CARTESIAN_AXES: JogAxis[] = ["X", "Y", "Z", "RX", "RY", "RZ"];
@@ -12,6 +12,7 @@ const RESPONSE_TIMEOUT_MS = 10000;
 export interface UseTeachingPendantControlsArgs {
   connected: boolean;
   teachingPendant: TeachingPendantState;
+  applyTeachingPendantSession: (enabled: boolean, currentPose: TeachingPendantPose | null) => void;
   beginTeachingPendantJog: (jogId: string) => void;
   beginTeachingPendantGripper: (cmdId: string) => void;
   timeoutTeachingPendantJog: (jogId: string) => void;
@@ -28,6 +29,7 @@ export interface UseTeachingPendantControlsArgs {
 export function useTeachingPendantControls({
   connected,
   teachingPendant,
+  applyTeachingPendantSession,
   beginTeachingPendantJog,
   beginTeachingPendantGripper,
   timeoutTeachingPendantJog,
@@ -59,7 +61,12 @@ export function useTeachingPendantControls({
   const handleEnable = async (): Promise<boolean> => {
     try {
       setActivationError(null);
-      await api.enableTeachingPendant();
+      const res = await api.enableTeachingPendant();
+      // WS 브로드캐스트(teaching_pendant.session_changed)를 기다리지 않고 POST 응답을
+      // 바로 반영한다 — 재연결 타이밍 등으로 이 클라이언트 소켓에 브로드캐스트가
+      // 도달하지 못하면 세션은 서버에서 켜졌는데 화면은 영원히 "비활성화"로 남는
+      // 문제가 있었다.
+      applyTeachingPendantSession(res.enabled, res.current_pose ?? null);
       return true;
     } catch (e) {
       setActivationError(e instanceof TeachingPendantError ? e.message : String(e));
@@ -69,7 +76,8 @@ export function useTeachingPendantControls({
 
   const handleDisable = async () => {
     try {
-      await api.disableTeachingPendant();
+      const res = await api.disableTeachingPendant();
+      applyTeachingPendantSession(res.enabled, res.current_pose ?? null);
     } catch (e) {
       console.error("티칭 팬던트 비활성화 실패:", e);
     }

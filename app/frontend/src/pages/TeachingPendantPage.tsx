@@ -12,6 +12,7 @@ export function TeachingPendantPage() {
   const {
     connected,
     teachingPendant,
+    applyTeachingPendantSession,
     beginTeachingPendantJog,
     beginTeachingPendantGripper,
     timeoutTeachingPendantJog,
@@ -44,6 +45,7 @@ export function TeachingPendantPage() {
   } = useTeachingPendantControls({
     connected,
     teachingPendant,
+    applyTeachingPendantSession,
     beginTeachingPendantJog,
     beginTeachingPendantGripper,
     timeoutTeachingPendantJog,
