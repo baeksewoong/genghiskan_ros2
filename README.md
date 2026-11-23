@@ -201,26 +201,23 @@
 ## 🚀 시작하기
 
 ### 요구 사항
-- Docker / Docker Compose
+- Docker Desktop / Docker / Docker Compose
 - Python 3.12
 - Node.js 20+
 - AWS SQS 엔드포인트 2개, region, accessKey, SecretKey
 - Ubuntu 24.04, ROS 2 Jazzy, doosan-robot2
 - rg2 그리퍼를 포함한 두산 협동로봇 Simulator 설치 (https://github.com/ahnisinc/cobot_rg2.git)
 
-### docker 실행
-
-> cd app/ <br/>
-> docker compose up --build
-
-
 
 ### 웹 빌드 & 실행
 
 ```bash
-# 1. 저장소 클론
+# 1. 저장소 클론 & docker compose up 실행
 git clone https://github.com/baeksewoong/genghiskan_ros2.git
-cd genghiskan_ros2/app
+
+cd genghiskan_ros2/app/ 
+docker compose up --build
+
 
 # 2. 최초 1회 설정 (venv/npm install, .env 생성, MySQL(Docker) 기동, DB 스키마 생성)
 ./scripts/setup.sh
