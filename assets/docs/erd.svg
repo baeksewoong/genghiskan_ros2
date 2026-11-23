@@ -1,9 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1008" viewBox="0 0 2000 1008">
-<rect width="2000" height="1008" fill="white"/>
-<g font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">
-<text x="60" y="52" fill="#1E1B4B" font-size="34" font-weight="800">Genghiskan ROS2 — ERD</text>
-<text x="60" y="84" fill="#6B7280" font-size="17">주문(Order) 중심 상태기계 · 작업요청(SQS) 경로 · 2026-11-20 기준</text>
-</g>
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="668" viewBox="0 100 2000 668">
+<rect x="0" y="100" width="2000" height="668" fill="white"/>
 <g font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">
 <rect x="60" y="150" width="380" height="156" rx="6" fill="white" stroke="#4338CA" stroke-width="2"/>
 <rect x="60" y="150" width="380" height="48" rx="6" fill="#4338CA"/>
@@ -217,14 +213,4 @@
 <text x="1110" y="577.0" fill="#4338CA" font-size="13" font-weight="700" text-anchor="end" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">1</text>
 <rect x="1025.4" y="552.0" width="69.19999999999999" height="22" rx="4" fill="#FAFAFC" stroke="#E2E2EC"/>
 <text x="1060.0" y="567.0" fill="#4B4B63" font-size="13" text-anchor="middle" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">held at</text>
-<rect x="580" y="808" width="960" height="160" rx="8" fill="#FAFAFC" stroke="#E2E2EC"/>
-<text x="620" y="848" fill="#C2410C" font-size="14" font-weight="700" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">PK</text>
-<text x="654" y="848" fill="#1E1B4B" font-size="14" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">Primary Key</text>
-<text x="840" y="848" fill="#0D9488" font-size="14" font-weight="700" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">FK</text>
-<text x="874" y="848" fill="#1E1B4B" font-size="14" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">Foreign Key</text>
-<text x="1060" y="848" fill="#B45309" font-size="14" font-weight="700" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">UQ</text>
-<text x="1094" y="848" fill="#1E1B4B" font-size="14" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">Unique</text>
-<line x1="620" y1="878" x2="1500" y2="878" stroke="#E2E2EC"/>
-<text x="620" y="908" fill="#1E1B4B" font-size="14" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">1 / N / 0..1 = 관계 카디널리티 (one / many / optional-one)</text>
-<text x="620" y="938" fill="#6B7280" font-size="13" font-family="'Apple SD Gothic Neo', Helvetica, Arial, sans-serif">FK는 ORM relationship이 아닌 컬럼 레벨 외래키이며, printer_slot/receive_pos_id는 논리적 참조(스키마상 FK 아님)</text>
 </svg>

@@ -1,0 +1,71 @@
+<svg width="100%" viewBox="0 90 1940 300" xmlns="http://www.w3.org/2000/svg" font-family="'Apple SD Gothic Neo','Pretendard','Malgun Gothic',sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="90" width="1940" height="300" fill="#FFFFFF"/>
+
+  <!-- connecting arrows (drawn first, under boxes) -->
+  <line x1="380" y1="240" x2="420" y2="240" stroke="#64748B" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="760" y1="240" x2="800" y2="240" stroke="#64748B" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1140" y1="240" x2="1180" y2="240" stroke="#64748B" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1520" y1="240" x2="1560" y2="240" stroke="#64748B" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- Box 1: 데이터 소스 (gray) -->
+  <g>
+    <rect x="40" y="110" width="340" height="260" rx="14" fill="#F3F4F6" stroke="#9CA3AF" stroke-width="1.5"/>
+    <rect x="40" y="110" width="340" height="40" rx="14" fill="#E5E7EB"/>
+    <rect x="40" y="136" width="340" height="14" fill="#E5E7EB"/>
+    <text x="210" y="136" font-size="14" font-weight="700" fill="#374151" text-anchor="middle">실시간 데이터 소스</text>
+    <text x="210" y="195" font-size="20" font-weight="700" fill="#111827" text-anchor="middle">ROS 2 + AWS SQS</text>
+    <text x="210" y="235" font-size="15" fill="#4B5563" text-anchor="middle">실물 로봇 관절각 피드백</text>
+    <text x="210" y="260" font-size="15" fill="#4B5563" text-anchor="middle">(SQS가 유일한 통신 경로)</text>
+  </g>
+
+  <!-- Box 2: Backend (blue) -->
+  <g>
+    <rect x="420" y="110" width="340" height="260" rx="14" fill="#EFF6FF" stroke="#60A5FA" stroke-width="1.5"/>
+    <rect x="420" y="110" width="340" height="40" rx="14" fill="#DBEAFE"/>
+    <rect x="420" y="136" width="340" height="14" fill="#DBEAFE"/>
+    <text x="590" y="136" font-size="14" font-weight="700" fill="#1D4ED8" text-anchor="middle">BACKEND</text>
+    <text x="590" y="195" font-size="20" font-weight="700" fill="#111827" text-anchor="middle">FastAPI</text>
+    <text x="590" y="235" font-size="15" fill="#374151" text-anchor="middle">WebSocket으로 프론트엔드에</text>
+    <text x="590" y="260" font-size="15" fill="#374151" text-anchor="middle">실시간 중계</text>
+  </g>
+
+  <!-- Box 3: Frontend state (teal) -->
+  <g>
+    <rect x="800" y="110" width="340" height="260" rx="14" fill="#ECFDF5" stroke="#34D399" stroke-width="1.5"/>
+    <rect x="800" y="110" width="340" height="40" rx="14" fill="#D1FAE5"/>
+    <rect x="800" y="136" width="340" height="14" fill="#D1FAE5"/>
+    <text x="970" y="136" font-size="14" font-weight="700" fill="#047857" text-anchor="middle">FRONTEND 상태</text>
+    <text x="970" y="195" font-size="20" font-weight="700" fill="#111827" text-anchor="middle">useLiveState()</text>
+    <text x="970" y="235" font-size="15" fill="#374151" text-anchor="middle">관절 상태를 보관하고</text>
+    <text x="970" y="260" font-size="15" fill="#374151" text-anchor="middle">뷰어 컴포넌트에 전달</text>
+  </g>
+
+  <!-- Box 4: React component (purple) -->
+  <g>
+    <rect x="1180" y="110" width="340" height="260" rx="14" fill="#F5F3FF" stroke="#A78BFA" stroke-width="1.5"/>
+    <rect x="1180" y="110" width="340" height="40" rx="14" fill="#EDE9FE"/>
+    <rect x="1180" y="136" width="340" height="14" fill="#EDE9FE"/>
+    <text x="1350" y="136" font-size="14" font-weight="700" fill="#6D28D9" text-anchor="middle">REACT 컴포넌트</text>
+    <text x="1350" y="190" font-size="19" font-weight="700" fill="#111827" text-anchor="middle">DoosanM0609</text>
+    <text x="1350" y="213" font-size="19" font-weight="700" fill="#111827" text-anchor="middle">Viewer</text>
+    <text x="1350" y="250" font-size="15" fill="#374151" text-anchor="middle">Home · 그리퍼 제어 버튼</text>
+  </g>
+
+  <!-- Box 5: 3D rendering (orange) -->
+  <g>
+    <rect x="1560" y="110" width="340" height="260" rx="14" fill="#FFF7ED" stroke="#FB923C" stroke-width="1.5"/>
+    <rect x="1560" y="110" width="340" height="40" rx="14" fill="#FFEDD5"/>
+    <rect x="1560" y="136" width="340" height="14" fill="#FFEDD5"/>
+    <text x="1730" y="136" font-size="14" font-weight="700" fill="#C2410C" text-anchor="middle">3D 렌더링 (THREE.JS)</text>
+    <text x="1730" y="195" font-size="20" font-weight="700" fill="#111827" text-anchor="middle">Scene Viewer</text>
+    <text x="1730" y="235" font-size="15" fill="#374151" text-anchor="middle">URDF 로봇 모델에</text>
+    <text x="1730" y="260" font-size="15" fill="#374151" text-anchor="middle">실시간 자세 반영</text>
+  </g>
+
+</svg>

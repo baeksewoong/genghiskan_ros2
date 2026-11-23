@@ -62,7 +62,7 @@
 2. 보드 부족이나 작업 중 이벤트 등 예외 상황에 대한 대응
 3. 로봇의 상태와 작업 처리 상황을 모니터링할 수 있는 웹 대시보드 개발
 4. 웹 티칭 팬던트로 로봇팔 원격 조그·그리퍼 제어
-5. 3D 뷰어로 로봇팔의 실시간 자세 모니터링
+5. 3D 뷰어로 로봇팔의 실시간 자세 모니터링 (디지털 트윈)
 
 <br/>
 
@@ -109,7 +109,7 @@
 | 🙋 수령 | 유저가 수령대에서 완성물을 수령해가려면 웹 대시보드에서 수령을 누른다 |
 | 🎮 웹 대시보드 | 작업 대기(밀려있는 작업 로그), 3D 프린터 작업대 현황(작업 상태), 수령 대기, 적재대 현황, 수령대 현황, 작업 히스토리 |
 | 🕹️ 티칭 팬던트 | 웹에서 로봇팔 조그 이동(관절/좌표)과 그리퍼 열기·닫기. 활성화 전에 안전 확인 모달을 띄우고, 세션 중에는 새 작업요청을 받지 않는다. |
-| 🧊 3D 뷰어 | M0609 + RG2 URDF 모델에 실시간 조인트 각도를 반영하고, 작업대·적재대도 함께 표시한다. |
+| 🧊 디지털 트윈 | M0609 + RG2 URDF 모델에 실시간 조인트 각도를 반영하고, 작업대·적재대도 함께 표시한다. |
 | 📊 SQS 모니터 | `robot-commands`, `robot-events` 큐로 오간 메시지 로그를 확인한다. |
 | 🧪 예외 처리 | 예외 상황별 모달로 안내한다. 로봇은 홈으로 돌아와 문제가 해결될 때까지 작업을 멈춘다. |
 
@@ -122,11 +122,11 @@
 
 | 상황  | 처리 |
 |------|------|
-| 적재대 재고 0 | "보드를 채워주세요" 알럿. 채우기 완료를 누르면 대기 중인 주문을 바로 다시 발행 |
-| 적재대에서 보드 집기 실패 (`load1`) | "적재대의 보드를 확인해 주세요" 알럿. 보드 위치를 바로잡고 확인을 누르면 같은 작업으로 LOAD 재전송 |
-| 프린터에 넣기 실패 (`load2`) | "작업대에 잘 들어갔나요?" 확인. 네 → 성공으로 처리하고 진행, 아니오 → 관리자 문의 모달 |
-| 프린터에서 빼기 실패 (`unload1`) | "작업대에 보드를 확인하세요!" 알럿. 확인을 누르면 `unload1` 재시도 |
-| 수령대 2칸 모두 참 | 수령하기로 자리가 나면 자동으로 닫히고 `unload2` 발행 |
+| 적재대 재고 0 | "보드를 채워주세요" 알럿. <br/> 채우기 완료를 누르면 대기 중인 주문을 바로 다시 발행 |
+| 적재대에서 보드 집기 실패 (`load1`) | "적재대의 보드를 확인해 주세요" <br/>알럿. 보드 위치를 바로잡고 확인을 누르면 같은 작업으로 LOAD 재전송 |
+| 프린터에 넣기 실패 (`load2`) | "작업대에 잘 들어갔나요?" <br/> 네 → 성공으로 처리하고 진행, 아니오 → 관리자 문의 모달 |
+| 프린터에서 빼기 실패 (`unload1`) | "작업대에 보드를 확인하세요!" 알럿. <br/> 확인을 누르면 `unload1` 재시도 |
+| 수령대 2칸 모두 참 | 프린터 작업이 완료 되어도 unload 를 하지 않는다. <br/>자리가 생기면 수령대를 polling 하고있다가 unload 수행 |
 
 </details>
 
@@ -148,24 +148,25 @@
 
 <img src="assets/common/system_architect.png" align="center">
 
-- **server**: 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load1/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
-- **sfarm_bridge**: `robot-commands` 큐를 구독해 ROS 2 액션으로 실행하고, 실행 결과를 `robot-events` 큐로 서버에 돌려준다.
-- **sfarm_robot**: 두산 M0609 + OnRobot RG2 그리퍼의 실제 LOAD/UNLOAD 동작을 수행하는 액션 서버.
-- **sfarm_joint_streamer**: 로봇 조인트 각도를 `/ws/robot-state` WebSocket으로 스트리밍해 대시보드 3D 뷰어(티칭 팬던트)에 실시간 자세를 반영한다.
+- **server**: <br/> 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load1/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
+- **sfarm_bridge**: <br/> `robot-commands` 큐를 구독해 ROS 2 액션으로 실행하고, 실행 결과를 `robot-events` 큐로 서버에 돌려준다.
+- **sfarm_robot**: <br/> 두산 M0609 + OnRobot RG2 그리퍼의 실제 LOAD/UNLOAD 동작을 수행하는 액션 서버.
+- **sfarm_joint_streamer**: <br/> 로봇 조인트 각도를 `/ws/robot-state` WebSocket으로 스트리밍해 대시보드 3D 뷰어(티칭 팬던트)에 실시간 자세를 반영한다.
 
-로봇과의 통신은 AWS SQS로만 이루어진다 (가상 로봇/시뮬레이터 경로는 제거됨).
+로봇동작을 위한 통신은 AWS SQS로만 이루어진다.   
+디지털 트윈을 위한 기능 구현은 websocket 으로 구현.
 
 <details>
 <summary>🗄️ ERD 펼쳐보기</summary>
 
-<img src="assets/docs/erd.png" align="center"/>
+<img src="assets/docs/erd.svg" align="center"/>
 
 </details>
 
 <details>
 <summary>🧊 3D 뷰어 구조 펼쳐보기</summary>
 
-<img src="assets/docs/diagrams/3d_viewer_architecture.png" align="center"/>
+<img src="assets/docs/diagrams/3d_viewer_architecture_simple.svg" align="center"/>
 
 </details>
 
@@ -186,7 +187,7 @@
 │   │   ├── sfarm_interfaces/       # 커스텀 action / msg
 │   │   ├── sfarm_bridge/           # AWS SQS ↔ ROS 2 액션 브릿지 노드
 │   │   ├── sfarm_robot/            # 두산 M0609 + OnRobot RG2 로봇팔 동작 실행 노드 (LOAD/UNLOAD)
-│   │   └── sfarm_joint_streamer/   # 조인트 상태 → 백엔드 WebSocket 스트리밍 (3D 뷰어용)
+│   │   └── sfarm_joint_streamer/   # 조인트 상태 → 백엔드 WebSocket 스트리밍 (디지털 트윈용)
 │   └── docker-compose.yml          # MySQL 8.0 + backend
 ├── assets/docs/                     # PRD, WBS, 작업 이력 등 기획 문서
 └── README.md
@@ -207,11 +208,14 @@
 - Ubuntu 24.04, ROS 2 Jazzy, doosan-robot2
 - rg2 그리퍼를 포함한 두산 협동로봇 Simulator 설치 (https://github.com/ahnisinc/cobot_rg2.git)
 
+### docker 실행
+
+> cd app/ <br/>
+> docker compose up --build
+
+
 
 ### 웹 빌드 & 실행
-
-실제 구현은 `app/` 아래 있습니다 (`app/backend`, `app/frontend`, `app/ros2_ws`). 처음 클론한 뒤
-아래 스크립트 두 개로 실행할 수 있습니다 (자세한 설명·수동 실행 방법은 [`app/README.md`](app/README.md) 참고).
 
 ```bash
 # 1. 저장소 클론
@@ -256,11 +260,11 @@ ros2 run sfarm_joint_streamer joint_streamer --ros-args -p joint_states_topic:=/
 </details>
 
 <details>
-<summary>❗ 문제 3 — 프린터 여러 대가 동시에 끝나면 로봇이 완성품을 든 채 다음 명령을 받음</summary>
+<summary>❗ 문제 3 — 로봇이 중간에 멈춤</summary>
 
-- **원인**: 타이머 스윕이 출력이 끝난 프린터마다 `unload1`을 즉시 발행했다. 빈 프린터가 없는데도 `load1`을 보내서, 보드를 집고도 놓을 곳이 없어 멈추는(deadlock) 경우도 있었다.
-- **해결**: `dispatch_pending_robot_work`가 한 번에 하나씩만 발행하도록 바꾸고, 빈 프린터가 없으면 `load1` 자체를 보류하는 가드를 추가했다.
-- **배운 점**: 명령을 보내기 전에 "이 명령을 끝까지 수행할 자리가 있는지"까지 확인해야 물리 시스템이 멈추지 않는다.
+- **원인**: 출력이 끝난 프린터마다 `unload1`이벤트를 발행. 로봇이 완료된 작업 베드를 꺼낸 후 수령대에 놓을 곳이 없으면 동작을 멈춘다.
+- **해결**: 출력 완료시 수령대의 상황을 확인 후 unload1 이벤트를 발행하게 하여 해결.
+- **배운 점**: 명령을 보내기 전에 현재 상황을 파악하는 로직을 앞에 두고 행동 이벤트를 발행해야 한다.
 
 </details>
 
