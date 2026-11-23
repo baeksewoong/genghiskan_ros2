@@ -1,3 +1,5 @@
+# [두산로보틱스 10기 / 협동-1 / 프로젝트]
+
 <div align="center">
 
 <img src="assets/robots/hello.svg" width="120" alt="소규모 3D 프린트 업장 관리 로봇"/>
@@ -15,6 +17,9 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.11x-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-6.x-646CFF?style=flat-square&logo=vite&logoColor=white)
+![Three.js](https://img.shields.io/badge/Three.js-urdf--loader-000000?style=flat-square&logo=three.js&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00?style=flat-square&logo=sqlalchemy&logoColor=white)
 ![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?style=flat-square&logo=mysql&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
@@ -25,8 +30,27 @@
 [![DRL](https://img.shields.io/badge/DRL-Doosan_Robot_Language-0066B3?style=flat-square)](https://v2-manual.scroll.site/ko/v2-programming-manual/2.12.1/publish/drl-basic-syntax)
 
 
+## <img src="assets/robots/hello.svg" width="32" align="center"/> 프로젝트 결과
+
+
+<table align="center">
+
+<tr>
+<td align="center"><img src="assets/common/load1.gif" width="260"/><br/>베드 빼기</td>
+<td align="center"><img src="assets/common/load2.gif" width="260"/><br/>배드 넣기</td>
+<td align="center"><img src="assets/common/unload.gif" width="260"/><br/>출력</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<img src="assets/common/demo.gif" width="100%"/>
+</tr>
+</table>
    
 
+<br/>
+<br/> 
 
 
 ## <img src="assets/robots/hello.svg" width="32" align="center"/> 프로젝트 소개
@@ -43,14 +67,14 @@
 3. 로봇의 상태와 작업 처리 상황을 모니터링할 수 있는 웹 대시보드 개발
 4. 웹 티칭 팬던트로 로봇팔 원격 조그·그리퍼 제어
 5. 3D 뷰어로 로봇팔의 실시간 자세 모니터링
-- **기획 문서**: [PRD](assets/docs/prd.md) · [작업요청 SQS PRD](assets/docs/prd-work-request-sqs.md) · [티칭 팬던트 PRD](assets/docs/prd-teaching-pendant.md) · [티칭 팬던트 ROS2 PRD](assets/docs/prd-teaching-pendant-ros2.md)
-- **진행 문서**: [WBS](assets/docs/wbs.md) · [작업 히스토리](assets/docs/work-history.md) · [작업요청 SQS 테스트 계획](assets/docs/test-plan-work-request-sqs.md) · [로봇 동작(motions) 설명](app/ros2_ws/src/sfarm_robot/sfarm_robot/motions.md)
 
-<div align="center">
+<br/>
 
-<img src="assets/docs/시연영상_5초.gif" width="700"/>
+### 🐥 용어정리
+- **load:** 베드를 집어 작업대(3D 프린터)에 넣는 과정. load1 과 load2 두 단계로 동작이 이루어집니다.
+- **unload:** 작업이 완료된 베드를 꺼내 수령대로 옮기는 과정입니다. unload1 과 unload2 두 과정으로 동작이 이루어집니다.
 
-</div>
+<br/>
 
 ### ✨ 핵심 기술 포인트
 
@@ -62,6 +86,8 @@
 | 📨 SQS 기반 비동기 명령/이벤트 | 서버와 로봇은 `robot-commands`, `robot-events` FIFO 큐로만 통신한다. 로봇이 작업 중일 때 들어온 요청은 대기했다가 `UNLOAD > LOAD` 우선순위로 처리한다. |
 | 🔒 로봇 점유(mutex)와 순서 보장 | 로봇이 1대뿐이라 동시에 실행되는 작업은 최대 1개로 제한한다 (`SELECT ... FOR UPDATE`). 먼저 기다린 주문을 새치기하지 않는다. |
 
+<br/>
+
 ### 업장 구성
 - **로봇**: Doosan M0609 협동로봇 + OnRobot RG2 그리퍼 1대
 - **3D 프린터(작업대)**: 3대 · **보드 적재대**: 3층 · **수령대**: 2칸
@@ -69,6 +95,8 @@
 <img src="assets/common/3d_place.png" width="100%" align="center"/>
 
 
+<br/>
+<br/>
 
 
 ## <img src="assets/robots/excited.svg" width="32" align="center"/> 주요 기능
@@ -89,19 +117,27 @@
 | 📊 SQS 모니터 | `robot-commands`, `robot-events` 큐로 오간 메시지 로그를 확인한다. |
 | 🧪 예외 처리 | 예외 상황별 모달로 안내한다. 로봇은 홈으로 돌아와 문제가 해결될 때까지 작업을 멈춘다. |
 
-<details>
-<summary>🚨 예외 상황별 처리 펼쳐보기</summary>
 
-| 상황 | 모달 | 처리 |
-|------|------|------|
-| 적재대 재고 0 | `BoardStockRefillModal` | "보드를 채워주세요" 알럿. 채우기 완료를 누르면 대기 중인 주문을 바로 다시 발행 |
-| 적재대에서 보드 집기 실패 (`load1`) | `LoadPickFailedModal` | "적재대의 보드를 확인해 주세요" 알럿. 보드 위치를 바로잡고 확인을 누르면 같은 작업으로 LOAD 재전송 |
-| 프린터에 넣기 실패 (`load2`) | `PlaceFailedModal` | "작업대에 잘 들어갔나요?" 확인. 네 → 성공으로 처리하고 진행, 아니오 → 관리자 문의 모달 |
-| 프린터에서 빼기 실패 (`unload1`) | `UnloadPickFailedModal` | "작업대에 보드를 확인하세요!" 알럿. 확인을 누르면 `unload1` 재시도 |
-| 수령대 2칸 모두 참 | `ReceivePosFullModal` | 수령하기로 자리가 나면 자동으로 닫히고 `unload2` 발행 |
+<br/>
+
+
+## 🚨 예외처리
+
+
+| 상황  | 처리 |
+|------|------|
+| 적재대 재고 0 | "보드를 채워주세요" 알럿. 채우기 완료를 누르면 대기 중인 주문을 바로 다시 발행 |
+| 적재대에서 보드 집기 실패 (`load1`) | "적재대의 보드를 확인해 주세요" 알럿. 보드 위치를 바로잡고 확인을 누르면 같은 작업으로 LOAD 재전송 |
+| 프린터에 넣기 실패 (`load2`) | "작업대에 잘 들어갔나요?" 확인. 네 → 성공으로 처리하고 진행, 아니오 → 관리자 문의 모달 |
+| 프린터에서 빼기 실패 (`unload1`) | "작업대에 보드를 확인하세요!" 알럿. 확인을 누르면 `unload1` 재시도 |
+| 수령대 2칸 모두 참 | 수령하기로 자리가 나면 자동으로 닫히고 `unload2` 발행 |
 
 </details>
 
+
+
+<br/>
+<br/>
 
 
 ### 주문 상태 흐름
@@ -109,12 +145,14 @@
 
 
 
+<br/>
+<br/>
 
 ## 🧩 시스템 구조
 
 <img src="assets/common/system_architect.png" align="center">
 
-- **server**: 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
+- **server**: 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load1/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
 - **sfarm_bridge**: `robot-commands` 큐를 구독해 ROS 2 액션으로 실행하고, 실행 결과를 `robot-events` 큐로 서버에 돌려준다.
 - **sfarm_robot**: 두산 M0609 + OnRobot RG2 그리퍼의 실제 LOAD/UNLOAD 동작을 수행하는 액션 서버.
 - **sfarm_joint_streamer**: 로봇 조인트 각도를 `/ws/robot-state` WebSocket으로 스트리밍해 대시보드 3D 뷰어(티칭 팬던트)에 실시간 자세를 반영한다.
@@ -160,6 +198,9 @@
 
 </details>
 
+<br/>
+
+
 ## 🚀 시작하기
 
 ### 요구 사항
@@ -168,6 +209,7 @@
 - Node.js 20+
 - AWS SQS 엔드포인트 2개, region, accessKey, SecretKey
 - Ubuntu 24.04, ROS 2 Jazzy, doosan-robot2
+- rg2 그리퍼를 포함한 두산 협동로봇 Simulator 설치 (https://github.com/ahnisinc/cobot_rg2.git)
 
 
 ### 웹 빌드 & 실행
@@ -177,44 +219,34 @@
 
 ```bash
 # 1. 저장소 클론
-git clone https://github.com/<org>/<repo>.git
-cd <repo>/app
+git clone https://github.com/baeksewoong/genghiskan_ros2.git
+cd genghiskan_ros2/app
 
 # 2. 최초 1회 설정 (venv/npm install, .env 생성, MySQL(Docker) 기동, DB 스키마 생성)
 ./scripts/setup.sh
 
 # 3. 이후 매번 이것만 실행 (Docker 컨테이너 안 떠있으면 기동 + 백엔드·프론트엔드 실행)
-./scripts/run.sh
+./scripts/run_all.sh
+
+# 4. joint streamer => 로봇 동작 시뮬레이터
+ros2 run sfarm_joint_streamer joint_streamer --ros-args -p joint_states_topic:=/dsr01/joint_states
+
 ```
 
-- 백엔드: http://localhost:8000, 프론트엔드: http://localhost:5173
-- 종료는 `./scripts/run.sh`가 실행 중인 터미널에서 `Ctrl+C`.
+➡️ 백엔드: http://localhost:8000, 프론트엔드: http://localhost:5173
 
-### 전체 시스템 실행 (ROS 2 + 웹)
-
-실물 로봇까지 한 번에 띄울 때는 `run_all.sh`를 씁니다. 실행 순서는 Doosan 드라이버(`m0609_rg2_bringup`) → `robot_action_server` → `sfarm_bridge` → 웹(`run.sh`)이고, `Ctrl+C` 한 번이면 전부 정리됩니다.
-
-```bash
-cd app
-./scripts/run_all.sh                 # 전체 실행 (드라이버 real 모드)
-./scripts/run_all.sh --build         # 실행 전에 colcon build
-./scripts/run_all.sh --no-driver     # 드라이버를 따로 띄운 경우
-./scripts/run_all.sh --ros-only      # 웹 없이 ROS만
-```
-
-- 환경변수로 덮어쓰기: `DSR_WS_PATH`(기본 `~/ws_cobot_pjt/ws_dsr`), `DSR_MODE`(`real`/`virtual`), `DSR_HOST`(기본 `192.168.1.100`), `ROS_DOMAIN_ID`(기본 20)
-- 3D 뷰어용 조인트 스트리밍: `ros2 launch sfarm_joint_streamer joint_streamer.launch.py`
+<br/>
 
 
 
 ## <img src="assets/robots/drained.svg" width="32" align="center"/> 트러블슈팅
 프로젝트 진행중 마주했던 문제와 해결방법에 대해 정리합니다.
 <details>
-<summary>❗ 문제 1 — 로봇이 작업 중일 때 들어온 이벤트가 유실되거나 순서가 꼬임</summary>
+<summary>❗ 문제 1 — 로봇이 작업 중일 때 들어온 이벤트가 동작 순서를 꼬이게 함</summary>
 
-- **원인**: 주문 생성·출력 완료 이벤트를 메시지로 바로 로봇에 보내면, 로봇이 바쁠 때 이벤트가 버려지거나 중복 실행될 수 있음
-- **해결**: 이벤트는 DB 상태로만 남기고, 로봇의 작업 결과를 받을 때마다 디스패처가 `UNLOAD > LOAD` 우선순위를 다시 평가. 동시 실행 작업은 트랜잭션(`SELECT ... FOR UPDATE`)으로 최대 1개 보장
-- **배운 점**: 자원(로봇)이 하나뿐이면 "언제 보낼지"를 이벤트가 아니라 상태로 판단해야 순서와 중복을 제어할 수 있다.
+- **원인**: 베드를 꺼내 작업대에 놓는 과정은 load1, load2 두 단계로 이어진다. load1 수행 중 새로운 이벤트가 들어오면 load2를 이어하지 않고, 이벤트를 받아 다른 동작을 하는 경우가 생겼다.
+- **해결**: 이벤트는 DB 상태로만 남기고, 로봇의 작업 결과를 받을 때마다 현재 어떤 동작을 수행하는지 판단하도록 수정.
+- **배운 점**: 로봇이 하나뿐이면 "언제 보낼지"를 이벤트가 아니라 상태로 판단해야 순서와 중복을 제어할 수 있다.
 
 </details>
 
@@ -222,7 +254,7 @@ cd app
 <summary>❗ 문제 2 — 집기 실패 후 재시도한 명령이 SQS에서 사라짐</summary>
 
 - **원인**: FIFO 큐는 같은 dedup id로 5분 안에 들어온 메시지를 버린다. 재시도가 첫 전송과 같은 `load-{id}`를 쓰고 있었다.
-- **해결**: 재시도할 때는 dedup id 뒤에 `retry_token`을 붙여서 새 메시지로 보낸다 (`unload1` 재시도도 같은 방식).
+- **해결**: 재시도할 때는 dedup id 뒤에 `uuid.uuid4()`을 붙여서 새 메시지로 보낸다 (`unload1` 재시도도 같은 방식).
 - **배운 점**: FIFO 큐의 중복 제거는 "같은 요청"과 "의도적인 재시도"를 구분하지 못하므로, 재시도에는 별도 식별자가 필요하다.
 
 </details>
@@ -249,21 +281,10 @@ cd app
 <summary>❗ 문제 5 — 프린터 슬롯에 보드를 넣을 때 걸리거나 과하게 밀림</summary>
 
 - **원인**: 위치 제어만으로 밀어 넣으면 슬롯과 조금만 어긋나도 걸리고, 끝까지 들어갔는지 알 수 없었다.
-- **해결**: 처음 구간은 위치 제어로 빠르게 다가가고, 마지막 구간은 순응(compliance) 제어로 밀어 넣는다. 위치 도달과 반력을 함께 확인해서 완료를 판정한다 (`insert_sd`).
+- **해결**: 처음 구간은 위치 제어로 빠르게 다가가고, 마지막 구간은 순응(compliance) 제어로 밀어 넣는다. 위치 도달과 반력을 함께 확인해서 완료를 판정한다.
 - **배운 점**: 접촉이 있는 작업은 위치 제어와 힘 제어를 구간별로 나눠 쓰면 정확성과 안정성을 둘 다 얻을 수 있다.
 
 </details>
-
-<details>
-<summary>❗ 문제 6 — <code>npm install</code> 후 3D 뷰어가 깨짐</summary>
-
-- **원인**: `three`, `urdf-loader`가 `package.json`에 선언되지 않은 채 수동 설치돼 있었다. 또 `loadMeshCb`가 설치된 `urdf-loader@0.13.1`과 다른 시그니처(인자 3개, 실제는 4개)로 작성돼 있었다.
-- **해결**: 의존성을 `package.json`에 정식으로 선언하고, 콜백을 실제 시그니처에 맞춰 URDF `<material>`을 그대로 적용하도록 고쳤다.
-- **배운 점**: 로컬에서만 동작하는 의존성은 다른 팀원 환경에서 바로 깨진다. 설치는 항상 `--save`로 한다.
-
-</details>
-
-
 
    
       
@@ -276,10 +297,10 @@ cd app
 | | 이름 | 역할 |
 |:---:|:---|:---|
 | <img src="assets/robots/hello.svg" width="60"/> | [남규진](https://github.com/skarbwls419-art) | ROS 2 모듈 개발 / launch.py 파일 작성 및 통합 테스트 QA |
-| <img src="assets/robots/love.svg" width="60"/> | [백세웅](https://github.com/tpdnd16-jpg) | 로봇 팔 동작 구현 (LOAD / UNLOAD) |
-| <img src="assets/robots/excited.svg" width="60"/> | [최희범](https://github.com/kcodeusers) | 로봇팔 동작 구현 (LOAD / UNLOAD) |
-| <img src="assets/robots/sleepy.svg" width="60"/> | [나연수](https://github.com/I-Am-Na) | 웹서버와 ROS2 node의 통신 노드 개발 / 인터페이스 정의 |
-| <img src="assets/robots/drained.svg" width="60"/> | [류병옥](https://github.com/devrereg) | 시스템 아키텍쳐 설계 / 웹 개발 |
+| <img src="assets/robots/love.svg" width="60"/> | [백세웅](https://github.com/tpdnd16-jpg) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
+| <img src="assets/robots/excited.svg" width="60"/> | [최희범](https://github.com/kcodeusers) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
+| <img src="assets/robots/sleepy.svg" width="60"/> | [나연수](https://github.com/I-Am-Na) | 아이디어 기획/ 웹서버와 ROS2 node의 통신 노드 개발 / 인터페이스 정의 / 디지털 트윈 모듈 개발 / 프로젝트 발표 |
+| <img src="assets/robots/drained.svg" width="60"/> | [류병옥](https://github.com/devrereg) | 시스템 아키텍쳐 설계 / 웹 개발 / 로봇 디지털 트윈 / 웹 티칭펜던트 구현으로 정밀 좌표 추출 | 
 
 </div>
 
@@ -288,6 +309,6 @@ cd app
 <div align="center">
 <img src="assets/robots/excited.svg" width="60"/>
 
-**⭐ 맘에 드셨다면 Star를 눌러주세요!**
+**⭐ 감사합니다!**
 
 </div>
