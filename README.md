@@ -294,11 +294,11 @@ ros2 run sfarm_joint_streamer joint_streamer --ros-args -p joint_states_topic:=/
 
 | | 이름 | 역할 |
 |:---:|:---|:---|
-| <img src="assets/robots/hello.svg" width="30"/> | [남&#8288;규&#8288;진](https://github.com/skarbwls419-art) | ROS 2 모듈 개발 / launch.py 파일 작성 및 통합 테스트 QA |
-| <img src="assets/robots/love.svg" width="30"/> | [백&#8288;세&#8288;웅](https://github.com/tpdnd16-jpg) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
-| <img src="assets/robots/excited.svg" width="30"/> | [최&#8288;희&#8288;범](https://github.com/kcodeusers) | 로봇 팔 동작 구현을 위한 ROS2 컨슈머 구현 (LOAD / UNLOAD) |
-| <img src="assets/robots/sleepy.svg" width="30"/> | [나&#8288;연&#8288;수](https://github.com/I-Am-Na) | 아이디어 기획/ 웹서버와 ROS2 node의 통신 노드 개발 / 인터페이스 정의 / 디지털 트윈 모듈 개발 / 프로젝트 발표 |
-| <img src="assets/robots/drained.svg" width="30"/> | [류&#8288;병&#8288;옥](https://github.com/devrereg) | 시스템 아키텍쳐 설계 / 웹 개발 / 로봇 디지털 트윈 / 웹 티칭펜던트 구현으로 정밀 좌표 추출 | 
+| <img src="assets/robots/hello.svg" width="30"/> | [남&#8288;규&#8288;진](https://github.com/skarbwls419-art) | 🚀 ROS 2 통합 아키텍처 총괄 설계자 / 수십 개 노드를 한 번에 띄우는 원클릭 Launch 오케스트레이션 시스템 구축 / E2E 통합 테스트·QA 총책임자로 시연 무결점 품질 보증, 버그는 시연장에 발도 못 들임 |
+| <img src="assets/robots/love.svg" width="30"/> | [백&#8288;세&#8288;웅](https://github.com/tpdnd16-jpg) | 💪 로봇팔 핵심 모션 엔진 단독 설계 및 구현 (LOAD / UNLOAD) / 6축 Fz 힘 센서 기반 보드 유무 실시간 판정 알고리즘 독자 개발 / 순응(Compliance) 제어로 0.1mm급 정밀 슬롯 삽입·인출 시퀀스 완성, 로봇에게 '손끝 감각'을 이식 |
+| <img src="assets/robots/excited.svg" width="30"/> | [최&#8288;희&#8288;범](https://github.com/kcodeusers) | ⚙️ 로봇팔 모션 제어 프레임워크 아키텍트 (LOAD / UNLOAD) / 전체 모션 코드 대규모 리팩토링으로 유지보수성과 재사용성을 차원이 다르게 끌어올림 / 현장 실측 기반 좌표 튜닝으로 반복 동작 안정성 극한까지 확보 |
+| <img src="assets/robots/sleepy.svg" width="30"/> | [나&#8288;연&#8288;수](https://github.com/I-Am-Na) | 🖊️ 프로젝트 비전 수립 및 기획 총괄 / 웹 ↔ ROS 2 실시간 양방향 통신 브리지 개발로 두 세계를 하나로 연결 / 시스템 전 구간 인터페이스 표준 제정 / 디지털 트윈 모듈 개발 / 최종 발표로 프로젝트의 얼굴 담당 |
+| <img src="assets/robots/drained.svg" width="30"/> | [류&#8288;병&#8288;옥](https://github.com/devrereg) | 🐙 시스템 아키텍처 총괄 설계자 / 풀스택 실시간 관제 웹 대시보드 구축 / 로봇팔 실시간 3D 디지털 트윈 구현 / 웹 티칭 펜던트 개발로 브라우저 하나로 로봇을 원격 조종하고 정밀 좌표까지 추출하는 환경 완성 | 
 
 </div>
 
