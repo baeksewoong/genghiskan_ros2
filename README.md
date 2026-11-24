@@ -146,7 +146,7 @@
 
 ## 🧩 시스템 구조
 
-<img src="assets/common/system_architect.png" align="center">
+<img src="assets/common/system_architect_1.png" align="center">
 
 - **server**: <br/> 작업요청·적재대·수령대·티칭 팬던트 API를 제공하고, `robot-commands` SQS 큐로 로봇 명령(load1/load2/unload1/unload2, 조그/그리퍼)을 발행한다.
 - **sfarm_bridge**: <br/> `robot-commands` 큐를 구독해 ROS 2 액션으로 실행하고, 실행 결과를 `robot-events` 큐로 서버에 돌려준다.
